@@ -57,6 +57,12 @@ jobs:
             0xe000  "$BOOT_APP0" \
             0x10000 .pio/build/t-dongle-s3/firmware.bin
           ls -la _site/firmware.bin
+          python3 - <<'PY'
+          d = open("_site/firmware.bin", "rb").read()
+          assert len(d) > 0xE000, "firmware.bin is too small"
+          assert set(d[0xD000:0xE000]) == {0xFF}, "cfg area is not blank - check partitions.csv"
+          print("cfg area is blank, OK")
+          PY
 
       - name: Assemble the web page
         run: |

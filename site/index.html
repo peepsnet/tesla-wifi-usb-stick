@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Wi-Fi USB Stick - Web Installer</title>
 <style>
-  :root { color-scheme: light dark; --bg:#fff; --fg:#1b1b1b; --card:#f3f4f6; --muted:#5b6470; --accent:#0b6bcb; --warn:#fff4d6; --warnfg:#5a4300; }
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1b1b1b; --card:#f3f4f6; --muted:#5b6470; --accent:#0b6bcb; --warn:#fff4d6; --warnfg:#5a4300; --err:#b00020; --line:#c9ced6; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#14171a; --fg:#e8eaed; --card:#1f2429; --muted:#9aa4af; --accent:#5aa9ff; --warn:#3a3014; --warnfg:#ffe29a; }
+    :root { --bg:#14171a; --fg:#e8eaed; --card:#1f2429; --muted:#9aa4af; --accent:#5aa9ff; --warn:#3a3014; --warnfg:#ffe29a; --err:#ff6b6b; --line:#3a424b; }
   }
   body { font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; }
   main { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
@@ -17,8 +17,22 @@
   ol li { margin: 8px 0; }
   a { color: var(--accent); }
   .muted { color: var(--muted); font-size: 14px; }
-  .install { margin: 24px 0; text-align: center; }
+  .install { margin: 20px 0 4px; text-align: center; }
   code { background: rgba(127,127,127,.2); padding: 1px 5px; border-radius: 4px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 3px; }
+  input[type=text], input[type=number], select { width: 100%; box-sizing: border-box; padding: 8px; font-size: 16px;
+     border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .check { display: flex; gap: 8px; align-items: center; font-weight: 400; }
+  .check input { width: auto; }
+  .full { grid-column: 1 / -1; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; font-weight: 600; }
+  .hint { color: var(--muted); font-size: 13px; margin: 3px 0 0; }
+  #errors { color: var(--err); font-weight: 600; margin: 10px 0 0; white-space: pre-line; }
+  #pwwarn { color: var(--warnfg); background: var(--warn); border-radius: 6px; padding: 6px 10px; font-size: 13px; margin-top: 6px; }
+  button.reset { margin-top: 12px; padding: 6px 12px; cursor: pointer; }
 </style>
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 </head>
@@ -34,20 +48,103 @@
   </div>
 
   <div class="card">
-    <h2>Install</h2>
+    <h2>1. Choose your settings</h2>
+    <p class="muted">These are written to the dongle when you install. The defaults work fine; just change the Wi-Fi name and password to your own.</p>
+    <form id="cfg" class="grid" autocomplete="off" onsubmit="return false">
+      <div>
+        <label for="ssid">Wi-Fi name (the dongle's own network)</label>
+        <input type="text" id="ssid" maxlength="32">
+      </div>
+      <div>
+        <label for="pass">Wi-Fi password (8-63 characters)</label>
+        <input type="text" id="pass" maxlength="63" spellcheck="false">
+      </div>
+      <div class="full" id="pwwarn" hidden>This is the example password shown on this public page. Please choose your own so only you can join the dongle's Wi-Fi.</div>
+
+      <div>
+        <label for="flip">Flip screen?</label>
+        <select id="flip">
+          <option value="0">No</option>
+          <option value="1">Yes</option>
+        </select>
+        <p class="hint">Choose Yes if the text on the screen appears upside down.</p>
+      </div>
+      <div>
+        <label for="label">Drive name (shown on your computer)</label>
+        <input type="text" id="label" maxlength="11">
+        <p class="hint">Up to 11 letters, numbers or spaces.</p>
+      </div>
+      <div>
+        <label for="usb">When the dongle is plugged in</label>
+        <select id="usb">
+          <option value="1">Start as a USB drive</option>
+          <option value="0">Start in Wi-Fi edit mode</option>
+        </select>
+      </div>
+      <div>
+        <label for="chime">Largest random lock chime (KB)</label>
+        <input type="number" id="chime" min="10" max="16000" step="1">
+        <p class="hint">The button only picks .wav files smaller than this.</p>
+      </div>
+
+      <details class="full">
+        <summary>Advanced</summary>
+        <div class="grid" style="margin-top:12px">
+          <div>
+            <label for="channel">Wi-Fi channel (1-13)</label>
+            <input type="number" id="channel" min="1" max="13" step="1">
+          </div>
+          <div>
+            <label class="check" style="margin-top:26px"><input type="checkbox" id="hidden"> Hide the Wi-Fi name (you must type it to join)</label>
+          </div>
+          <div>
+            <label for="bl">Screen backlight turns on with</label>
+            <select id="bl">
+              <option value="0">Low (default)</option>
+              <option value="1">High (try this if the screen stays dark)</option>
+            </select>
+          </div>
+          <div></div>
+          <div>
+            <label class="check"><input type="checkbox" id="invert"> Invert colours (default on)</label>
+            <p class="hint">Turn off if black and white look swapped.</p>
+          </div>
+          <div>
+            <label class="check"><input type="checkbox" id="rgb"> Swap red and blue</label>
+            <p class="hint">Turn on if red and blue look swapped.</p>
+          </div>
+          <div>
+            <label for="offx">Screen offset X</label>
+            <input type="number" id="offx" min="0" max="60" step="1">
+          </div>
+          <div>
+            <label for="offy">Screen offset Y</label>
+            <input type="number" id="offy" min="0" max="60" step="1">
+          </div>
+          <div class="full hint">Offsets only matter if the picture is shifted or cut off at an edge (X is normally 24-28, Y 0-2).</div>
+        </div>
+      </details>
+    </form>
+    <button type="button" class="reset" id="reset">Reset to defaults</button>
+    <div id="errors"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. Install</h2>
     <ol>
       <li>Use <strong>Chrome or Edge on a desktop or laptop</strong>. Firefox, Safari and phones can't flash from a web page.</li>
       <li><strong>Unplug</strong> the dongle. Press and <strong>hold the button</strong> on it, then plug it in while still holding it. Release after it is plugged in.</li>
       <li>Click <strong>Install</strong> below and choose the entry that looks like <em>USB JTAG/serial debug unit</em> (or "ESP32-S3") in the pop-up list.</li>
       <li>Wait for it to finish, then <strong>unplug and re-plug</strong> the dongle <em>without</em> holding the button.</li>
     </ol>
-    <div class="install">
-      <esp-web-install-button manifest="manifest.json">
+    <div class="install" id="installbox">
+      <esp-web-install-button id="installer" manifest="manifest.json">
         <button slot="activate" style="font-size:18px;padding:10px 22px;cursor:pointer">Install firmware</button>
         <span slot="unsupported">Your browser can't flash devices. Please open this page in Chrome or Edge on a desktop computer.</span>
         <span slot="not-allowed">Flashing needs a secure (https) page.</span>
       </esp-web-install-button>
     </div>
+    <p class="muted" id="ver"></p>
     <p class="muted">Installing replaces the dongle's firmware and, if you tick "Erase device", its saved Wi-Fi settings. Files on the microSD card are not touched.</p>
   </div>
 
@@ -56,20 +153,138 @@
     <ol>
       <li>Insert a microSD card formatted as <strong>FAT32</strong>.</li>
       <li>Plug the dongle in. It shows up as a USB drive on the computer, car or printer it is plugged into.</li>
-      <li>On your phone or laptop, join the dongle's own Wi-Fi network (name and password are in the project README), then open <code>http://192.168.4.1</code>.</li>
+      <li>On your phone or laptop, join the Wi-Fi network you chose above, then open <code>http://192.168.4.1</code>.</li>
       <li>Use the page to switch to Wi-Fi mode, upload or rename files, or join your home Wi-Fi.</li>
     </ol>
   </div>
 
   <p class="muted"><a id="src" href="https://github.com/">Source code on GitHub</a></p>
 </main>
+
 <script>
-  // Point the source link at this project's repository when hosted on GitHub Pages.
-  (function () {
+(function () {
+  // ---- must match partitions.csv: the "cfg" partition ----
+  var CFG_OFFSET = 0xD000, CFG_SIZE = 0x1000;
+
+  // ---- defaults (also used by "Reset to defaults") ----
+  var DEFAULTS = { ssid: "Tesla-USB-Stick", pass: "s3xyandiknowit", flip: "0", label: "Boombox",
+                   usb: "1", chime: 1000, channel: 1, hidden: false, bl: "0",
+                   invert: true, rgb: false, offx: 26, offy: 1 };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var enc = new TextEncoder();
+  var baseFw = null, version = "dev", urls = [], timer = null;
+
+  function setForm(v) {
+    $("ssid").value = v.ssid; $("pass").value = v.pass; $("flip").value = v.flip; $("label").value = v.label;
+    $("usb").value = v.usb; $("chime").value = v.chime; $("channel").value = v.channel;
+    $("hidden").checked = v.hidden; $("bl").value = v.bl; $("invert").checked = v.invert;
+    $("rgb").checked = v.rgb; $("offx").value = v.offx; $("offy").value = v.offy;
+  }
+
+  function intIn(id, lo, hi, name, errs) {
+    var s = $(id).value.trim();
+    var n = Number(s);
+    if (s === "" || !Number.isInteger(n) || n < lo || n > hi) { errs.push(name + " must be a whole number from " + lo + " to " + hi + "."); return null; }
+    return n;
+  }
+
+  function readForm() {
+    var errs = [], v = {};
+    v.ssid = $("ssid").value;
+    var sl = enc.encode(v.ssid).length;
+    if (sl < 1 || sl > 32) errs.push("Wi-Fi name must be 1 to 32 characters.");
+    if (/[\r\n]/.test(v.ssid)) errs.push("Wi-Fi name can't contain line breaks.");
+    v.pass = $("pass").value;
+    var pl = enc.encode(v.pass).length;
+    if (pl < 8 || pl > 63) errs.push("Wi-Fi password must be 8 to 63 characters.");
+    if (/[\r\n]/.test(v.pass)) errs.push("Wi-Fi password can't contain line breaks.");
+    v.label = $("label").value.replace(/\s+$/, "");
+    if (!/^[A-Za-z0-9 !#$%&'()\-@^_`{}~]{1,11}$/.test(v.label)) errs.push("Drive name must be 1 to 11 letters, numbers or spaces.");
+    v.flip = $("flip").value === "1" ? 1 : 0;
+    v.usb = $("usb").value === "1" ? 1 : 0;
+    var kb = intIn("chime", 10, 16000, "Largest lock chime", errs);
+    v.chime = kb === null ? 0 : kb * 1000;
+    v.channel = intIn("channel", 1, 13, "Wi-Fi channel", errs);
+    v.hidden = $("hidden").checked ? 1 : 0;
+    v.bl = $("bl").value === "1" ? 1 : 0;
+    v.invert = $("invert").checked ? 1 : 0;
+    v.rgb = $("rgb").checked ? 1 : 0;
+    v.offx = intIn("offx", 0, 60, "Screen offset X", errs);
+    v.offy = intIn("offy", 0, 60, "Screen offset Y", errs);
+    return { v: v, errs: errs };
+  }
+
+  function buildConfigBytes(v) {
+    // "ssid=..." etc. One setting per line; the first line is the marker the firmware looks for.
+    var text = ["WUSBCFG1",
+      "ssid=" + v.ssid, "pass=" + v.pass, "flip=" + v.flip, "label=" + v.label, "usb=" + v.usb,
+      "chime=" + v.chime, "offx=" + v.offx, "offy=" + v.offy, "inv=" + v.invert, "rgb=" + v.rgb,
+      "bl=" + v.bl, "hid=" + v.hidden, "ch=" + v.channel].join("\n") + "\n";
+    return enc.encode(text);
+  }
+
+  function clearUrls() { urls.forEach(function (u) { URL.revokeObjectURL(u); }); urls = []; }
+
+  function refresh() {
+    $("pwwarn").hidden = $("pass").value !== DEFAULTS.pass;
+    var r = readForm();
+    if (r.errs.length) {
+      $("errors").textContent = r.errs.join("\n");
+      $("installbox").style.display = "none";
+      return;
+    }
+    $("errors").textContent = "";
+    var cfg = buildConfigBytes(r.v);
+    if (cfg.length >= CFG_SIZE) { $("errors").textContent = "Settings are too long."; $("installbox").style.display = "none"; return; }
+
+    var fw = new Uint8Array(baseFw);               // copy of the published firmware
+    fw.set(cfg, CFG_OFFSET);                       // settings go in the blank "cfg" area
+    fw[CFG_OFFSET + cfg.length] = 0;               // end marker
+
+    clearUrls();
+    var fwUrl = URL.createObjectURL(new Blob([fw], { type: "application/octet-stream" }));
+    var manifest = { name: "Wi-Fi USB Stick", version: version, new_install_prompt_erase: true,
+                     builds: [{ chipFamily: "ESP32-S3", parts: [{ path: fwUrl, offset: 0 }] }] };
+    var mUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: "application/json" }));
+    urls.push(fwUrl, mUrl);
+    $("installer").setAttribute("manifest", mUrl);
+    $("installbox").style.display = "";
+  }
+
+  function schedule() { clearTimeout(timer); timer = setTimeout(refresh, 250); }
+
+  function start() {
+    // Point the source link at this project's repository when hosted on GitHub Pages.
     var m = location.hostname.match(/^(.+)\.github\.io$/);
     var repo = location.pathname.split("/").filter(Boolean)[0];
-    if (m && repo) document.getElementById("src").href = "https://github.com/" + m[1] + "/" + repo;
-  })();
+    if (m && repo) $("src").href = "https://github.com/" + m[1] + "/" + repo;
+
+    setForm(DEFAULTS);
+    Promise.all([fetch("firmware.bin"), fetch("manifest.json")]).then(function (res) {
+      if (!res[0].ok) throw new Error("firmware.bin not found");
+      return Promise.all([res[0].arrayBuffer(), res[1].ok ? res[1].json() : {}]);
+    }).then(function (data) {
+      baseFw = new Uint8Array(data[0]);
+      version = (data[1] && data[1].version) || "dev";
+      $("ver").textContent = "Firmware build: " + version;
+      if (baseFw.length < CFG_OFFSET + CFG_SIZE) throw new Error("unexpected firmware size");
+      for (var i = CFG_OFFSET; i < CFG_OFFSET + CFG_SIZE; i++) {
+        if (baseFw[i] !== 0xFF) throw new Error("unexpected firmware layout");
+      }
+      refresh();
+    }).catch(function (e) {
+      // Fall back to the plain firmware with default settings.
+      $("cfg").style.display = "none"; $("reset").style.display = "none";
+      $("errors").textContent = "Custom settings are unavailable (" + e.message + "). The firmware will be installed with the default settings.";
+    });
+
+    $("cfg").addEventListener("input", schedule);
+    $("cfg").addEventListener("change", schedule);
+    $("reset").addEventListener("click", function () { setForm(DEFAULTS); refresh(); });
+  }
+  start();
+})();
 </script>
 </body>
 </html>

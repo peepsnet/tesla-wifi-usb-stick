@@ -17,10 +17,34 @@ Open the installer page (GitHub Pages for this repository) in **Chrome or Edge o
 and follow the steps. You must hold the dongle's button while plugging it in so it enters
 flashing mode.
 
-## Wi-Fi name and password
-The dongle creates its own Wi-Fi network. The name and password are the `AP_SSID` and `AP_PASS`
-lines near the top of `src/main.cpp`. **Change them before you publish or flash**, because
-anyone who can read this repository can read them.
+## Settings you can choose before flashing
+The installer page has a form. Whatever you pick is written into a small "cfg" area of the
+dongle's flash together with the firmware:
+
+| Setting | What it does |
+|---|---|
+| Wi-Fi name / password | The dongle's own Wi-Fi network (password 8-63 characters) |
+| Flip screen? | No = normal, Yes = rotate the screen 180 degrees |
+| Drive name | The name shown for the drive on your computer (max 11 characters) |
+| Start mode | Start as a USB drive, or in Wi-Fi edit mode |
+| Largest random lock chime (KB) | The BOOT button only picks `.wav` files smaller than this |
+| Advanced: Wi-Fi channel, hide Wi-Fi name | Radio options for the dongle's own network |
+| Advanced: backlight level, invert colours, swap red/blue, screen offsets | Fixes for screens that look wrong |
+
+The form is pre-filled with the project defaults. **The default Wi-Fi password is visible on the
+public page and in `site/index.html` / `src/main.cpp`, so choose your own before installing.**
+To change the defaults that the page shows, edit `DEFAULTS` near the bottom of `site/index.html`
+and the matching values at the top of `src/main.cpp`.
+
+### How it works
+- `partitions.csv` adds a 4 KB data partition named `cfg` at flash offset `0xD000`.
+- The installer downloads the published `firmware.bin`, writes your settings (plain `key=value`
+  text starting with the line `WUSBCFG1`) into that blank area inside your browser, and flashes the
+  result. Nothing is sent to any server.
+- At boot the firmware reads the `cfg` partition. If it is blank or missing (for example when you
+  flash from PlatformIO), the built-in defaults in `src/main.cpp` are used.
+- The workflow checks that the `cfg` area is blank in every build, so a wrong partition layout is
+  caught early.
 
 ## Important notes
 - Only one side can use the card at a time. In **USB mode** the host owns the card; in

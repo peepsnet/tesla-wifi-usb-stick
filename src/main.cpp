@@ -14,7 +14,11 @@
  * Switch modes with the web page button, or by ejecting the drive in the
  * host OS (-> switches to Wi-Fi mode).
  *
- * BOOT button: picks a random .wav (smaller than MAX_CHIME_BYTES) from
+ * Settings: the values in the config block below are only DEFAULTS. The web
+ * installer can write a small "cfg" block into flash (Wi-Fi name/password,
+ * screen flip, drive name, ...) which overrides them at boot (see loadConfig).
+ *
+ * BOOT button: picks a random .wav (smaller than the size limit) from
  * anywhere on the card and copies it to /LockChime.wav. The original file is
  * left in place. If the drive is in USB mode, the stick briefly takes the card
  * back from the host (the host sees an eject/reinsert) to do the copy.
@@ -45,6 +49,7 @@
 #include <FS.h>
 #include <SD_MMC.h>
 #include <Preferences.h>
+#include "esp_partition.h"
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include "USB.h"
@@ -85,7 +90,7 @@ class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_ST7735S _panel;
   lgfx::Bus_SPI _bus;
 public:
-  LGFX() {
+  LGFX(int offsetX, int offsetY, bool invert, bool rgbOrder) {
     {
       auto cfg = _bus.config();
       cfg.spi_host = SPI2_HOST;
@@ -109,12 +114,12 @@ public:
       cfg.pin_busy = -1;
       cfg.panel_width = 80;
       cfg.panel_height = 160;
-      cfg.offset_x = LCD_OFFSET_X;
-      cfg.offset_y = LCD_OFFSET_Y;
+      cfg.offset_x = offsetX;
+      cfg.offset_y = offsetY;
       cfg.offset_rotation = 0;
       cfg.readable = false;
-      cfg.invert = LCD_INVERT;
-      cfg.rgb_order = LCD_RGB_ORDER;
+      cfg.invert = invert;
+      cfg.rgb_order = rgbOrder;
       cfg.dlen_16bit = false;
       cfg.bus_shared = false;
       _panel.config(cfg);
@@ -122,7 +127,7 @@ public:
     setPanel(&_panel);
   }
 };
-LGFX lcd;
+LGFX* lcdPtr = nullptr;     // created in displayInit(), after the settings are loaded
 
 USBMSC msc;
 WebServer server(80);
@@ -132,6 +137,21 @@ volatile bool ejectRequested = false;
 uint32_t sectorCount = 0;
 uint64_t cardTotal = 0;
 File uploadFile;
+
+// Runtime settings. They start at the defaults from the config block at the top
+// of this file and are overridden by the "cfg" flash block the web installer can
+// write (see loadConfig() near the end of this file).
+String   cfgSsid = AP_SSID;
+String   cfgPass = AP_PASS;
+String   cfgLabel = VOLUME_LABEL;
+bool     cfgStartUsb = START_IN_USB_MODE;
+uint32_t cfgMaxChime = MAX_CHIME_BYTES;
+int      cfgRotation = LCD_ROTATION;
+int      cfgOffX = LCD_OFFSET_X, cfgOffY = LCD_OFFSET_Y;
+bool     cfgInvert = LCD_INVERT, cfgRgb = LCD_RGB_ORDER;
+uint8_t  cfgBlOn = LCD_BL_ON;
+bool     cfgHidden = false;     // hide the stick's own Wi-Fi network name
+int      cfgChannel = 1;        // channel of the stick's own Wi-Fi network (1-13)
 
 // Wi-Fi client (station) state
 #define STA_TIMEOUT_MS 20000
@@ -442,19 +462,19 @@ bool toastOk = true;
 uint32_t toastUntil = 0;
 
 void drawToast() {
-  if (!USE_DISPLAY) return;
-  lcd.fillScreen(C_BLACK);
-  lcd.setTextSize(2);
-  lcd.setTextColor(toastOk ? C_GREEN : C_ORANGE, C_BLACK);
-  lcd.setCursor(4, 3);
-  lcd.print(toastTitle.c_str());
-  lcd.setTextSize(1);
-  lcd.setTextColor(C_WHITE, C_BLACK);
+  if (!lcdPtr) return;
+  lcdPtr->fillScreen(C_BLACK);
+  lcdPtr->setTextSize(2);
+  lcdPtr->setTextColor(toastOk ? C_GREEN : C_ORANGE, C_BLACK);
+  lcdPtr->setCursor(4, 3);
+  lcdPtr->print(toastTitle.c_str());
+  lcdPtr->setTextSize(1);
+  lcdPtr->setTextColor(C_WHITE, C_BLACK);
   for (int i = 0; i < 4; i++) {                    // up to 4 lines of 25 characters
     String part = toastLine.substring(i * 25, (i + 1) * 25);
     if (part.length() == 0) break;
-    lcd.setCursor(4, 26 + i * 12);
-    lcd.print(part.c_str());
+    lcdPtr->setCursor(4, 26 + i * 12);
+    lcdPtr->print(part.c_str());
   }
 }
 
@@ -476,19 +496,20 @@ static String fmtBytes(uint64_t b) {
 
 void displayInit() {
   if (!USE_DISPLAY) return;
-  lcd.init();
-  lcd.setRotation(LCD_ROTATION);
-  lcd.fillScreen(C_BLACK);
+  lcdPtr = new LGFX(cfgOffX, cfgOffY, cfgInvert, cfgRgb);
+  lcdPtr->init();
+  lcdPtr->setRotation(cfgRotation);
+  lcdPtr->fillScreen(C_BLACK);
   pinMode(LCD_BL, OUTPUT);
-  digitalWrite(LCD_BL, LCD_BL_ON);
-  lcd.setTextSize(2);
-  lcd.setTextColor(C_WHITE, C_BLACK);
-  lcd.setCursor(4, 30);
-  lcd.print("Starting...");
+  digitalWrite(LCD_BL, cfgBlOn);
+  lcdPtr->setTextSize(2);
+  lcdPtr->setTextColor(C_WHITE, C_BLACK);
+  lcdPtr->setCursor(4, 30);
+  lcdPtr->print("Starting...");
 }
 
 void displayUpdate() {
-  if (!USE_DISPLAY) return;
+  if (!lcdPtr) return;
   static uint32_t last = 0;
   if (millis() - last < 300) return;
   last = millis();
@@ -525,39 +546,39 @@ void displayUpdate() {
   if (key == lastScreenKey) return;      // nothing changed: no redraw, no flicker
   lastScreenKey = key;
 
-  lcd.fillScreen(C_BLACK);
-  lcd.setTextSize(2);
-  lcd.setTextColor(titleColor, C_BLACK);
-  lcd.setCursor(4, 3);
-  lcd.print(title.c_str());
+  lcdPtr->fillScreen(C_BLACK);
+  lcdPtr->setTextSize(2);
+  lcdPtr->setTextColor(titleColor, C_BLACK);
+  lcdPtr->setCursor(4, 3);
+  lcdPtr->print(title.c_str());
 
   if (bigIp) {
     // Single-line IP, scaled up to use the full screen width (max 3x).
     // Each character is 6 px wide at 1x; keep a 4 px margin on both sides.
-    float scale = (float)(lcd.width() - 8) / (6.0f * value.length());
+    float scale = (float)(lcdPtr->width() - 8) / (6.0f * value.length());
     if (scale > 3.0f) scale = 3.0f;
     int textH = (int)(8 * scale);
     int y = 22 + (58 - textH) / 2;          // centred in the area below the title
-    lcd.setTextSize(scale);
-    lcd.setTextColor(C_WHITE, C_BLACK);
-    lcd.setCursor(4, y);
-    lcd.print(value.c_str());
+    lcdPtr->setTextSize(scale);
+    lcdPtr->setTextColor(C_WHITE, C_BLACK);
+    lcdPtr->setCursor(4, y);
+    lcdPtr->print(value.c_str());
   } else {
-    lcd.setTextSize(1);
-    lcd.setTextColor(C_GREY, C_BLACK);
-    lcd.setCursor(4, 26);
-    lcd.print(label.c_str());
+    lcdPtr->setTextSize(1);
+    lcdPtr->setTextColor(C_GREY, C_BLACK);
+    lcdPtr->setCursor(4, 26);
+    lcdPtr->print(label.c_str());
 
-    lcd.setTextSize(value.length() <= 13 ? 2 : 1);   // long IPs drop to a smaller font
-    lcd.setTextColor(C_WHITE, C_BLACK);
-    lcd.setCursor(4, 37);
-    lcd.print(value.c_str());
+    lcdPtr->setTextSize(value.length() <= 13 ? 2 : 1);   // long IPs drop to a smaller font
+    lcdPtr->setTextColor(C_WHITE, C_BLACK);
+    lcdPtr->setCursor(4, 37);
+    lcdPtr->print(value.c_str());
   }
 
   if (extra.length()) {
-    lcd.setTextSize(extra.length() <= 13 ? 2 : 1);
-    lcd.setCursor(4, 60);
-    lcd.print(extra.c_str());
+    lcdPtr->setTextSize(extra.length() <= 13 ? 2 : 1);
+    lcdPtr->setCursor(4, 60);
+    lcdPtr->print(extra.c_str());
   }
 }
 
@@ -571,7 +592,7 @@ void setUsbMode(bool on) {
     xSemaphoreTake(sdLock, portMAX_DELAY);
     SD_MMC.end();                 // flush and drop cached FAT state
     mountSD();
-    if (sectorCount > 0) setVolumeLabelRaw(VOLUME_LABEL);   // name the drive
+    if (sectorCount > 0) setVolumeLabelRaw(cfgLabel.c_str());   // name the drive
     usbMode = true;
     xSemaphoreGive(sdLock);
     msc.mediaPresent(true);       // host sees the drive (re)appear
@@ -1075,7 +1096,7 @@ static void pickRandomWav(const String& dirPath, int depth, const String& skip, 
       String lower = name;
       lower.toLowerCase();
       bool isChime = (dirPath == "/" && (lower == "lockchime.wav" || lower == "lockchime.tmp"));
-      if (lower.endsWith(".wav") && !isChime && f.size() > 0 && f.size() < MAX_CHIME_BYTES && full != skip) {
+      if (lower.endsWith(".wav") && !isChime && f.size() > 0 && f.size() < cfgMaxChime && full != skip) {
         count++;
         if (esp_random() % count == 0) chosen = full;
       }
@@ -1097,7 +1118,7 @@ void randomLockChime() {
   bool ok = false;
   String line;
   if (count == 0) {
-    line = "No .wav files under 1 MB found";
+    line = "No suitable .wav files found";
   } else {
     String err = makeLockChime(chosen);
     if (err.length()) {
@@ -1113,10 +1134,59 @@ void randomLockChime() {
   showToast(ok ? "Chime set" : "Chime failed", line, 3000, ok);
 }
 
+// ---------------- Settings from the web installer ----------------
+// The installer page writes a small text block into a dedicated flash partition
+// ("cfg", see partitions.csv) in the form:
+//   WUSBCFG1
+//   ssid=My Network
+//   pass=mypassword
+//   flip=1
+//   ...
+// If the partition is missing or doesn't start with the magic line (for example
+// when flashed from the Arduino IDE or PlatformIO), the defaults above are used.
+#define CFG_SIZE 4096
+
+static void applyConfig(const String& k, const String& v) {
+  if (k == "ssid")       { if (v.length() >= 1 && v.length() <= 32) cfgSsid = v; }
+  else if (k == "pass")  { if (v.length() >= 8 && v.length() <= 63) cfgPass = v; }
+  else if (k == "flip")  { cfgRotation = (v == "1") ? 1 : 3; }       // Flip screen? Yes = 1, No = 3
+  else if (k == "label") { if (v.length() >= 1 && v.length() <= 11) cfgLabel = v; }
+  else if (k == "usb")   { cfgStartUsb = (v == "1"); }
+  else if (k == "chime") { long n = v.toInt(); if (n > 0) cfgMaxChime = (uint32_t)n; }
+  else if (k == "offx")  { cfgOffX = (int)v.toInt(); }
+  else if (k == "offy")  { cfgOffY = (int)v.toInt(); }
+  else if (k == "inv")   { cfgInvert = (v == "1"); }
+  else if (k == "rgb")   { cfgRgb = (v == "1"); }
+  else if (k == "bl")    { cfgBlOn = (v == "1") ? HIGH : LOW; }
+  else if (k == "hid")   { cfgHidden = (v == "1"); }
+  else if (k == "ch")    { long c = v.toInt(); if (c >= 1 && c <= 13) cfgChannel = (int)c; }
+}
+
+void loadConfig() {
+  const esp_partition_t* part =
+      esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x99, "cfg");
+  if (!part) return;
+  static uint8_t buf[CFG_SIZE];
+  if (esp_partition_read(part, 0, buf, sizeof(buf)) != ESP_OK) return;
+  if (memcmp(buf, "WUSBCFG1\n", 9) != 0) return;     // nothing (valid) written: keep defaults
+
+  size_t i = 9;
+  while (i < sizeof(buf) && buf[i] != 0 && buf[i] != 0xFF) {
+    size_t j = i;
+    while (j < sizeof(buf) && buf[j] != '\n' && buf[j] != 0 && buf[j] != 0xFF) j++;
+    String line;
+    line.concat((const char*)(buf + i), (unsigned int)(j - i));
+    int eq = line.indexOf('=');
+    if (eq > 0) applyConfig(line.substring(0, eq), line.substring(eq + 1));
+    i = j + 1;
+  }
+}
+
 // ---------------- Setup / loop ----------------
 void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   sdLock = xSemaphoreCreateMutex();
+  loadConfig();        // settings written by the web installer (if any)
   displayInit();
 
   if (!mountSD()) {
@@ -1129,21 +1199,21 @@ void setup() {
 
   // USB mass storage
   msc.vendorID("ESP32");
-  msc.productID(VOLUME_LABEL);
+  msc.productID(cfgLabel.c_str());
   msc.productRevision("1.0");
   msc.onRead(onRead);
   msc.onWrite(onWrite);
   msc.onStartStop(onStartStop);
   msc.mediaPresent(false);
   msc.begin(sectorCount, 512);
-  USB.productName(VOLUME_LABEL);
+  USB.productName(cfgLabel.c_str());
   USB.begin();
 
   // Wi-Fi access point + web server
   WiFi.persistent(false);          // we store credentials ourselves
   WiFi.mode(WIFI_AP_STA);          // own access point + optional router link
   WiFi.setAutoReconnect(true);
-  WiFi.softAP(AP_SSID, AP_PASS);
+  WiFi.softAP(cfgSsid.c_str(), cfgPass.c_str(), cfgChannel, cfgHidden);
   loadWifiPrefs();
 
   server.on("/", HTTP_GET, handleRoot);
@@ -1163,7 +1233,7 @@ void setup() {
   server.on("/wifi/forget", HTTP_POST, handleWifiForget);
   server.begin();
 
-  if (START_IN_USB_MODE && sectorCount > 0) setUsbMode(true);
+  if (cfgStartUsb && sectorCount > 0) setUsbMode(true);
   else staConnectSaved();          // starting in Wi-Fi mode: join saved router
 }
 

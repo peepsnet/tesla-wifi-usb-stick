@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wi-Fi USB Stick - Web Installer</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1b1b1b; --card:#f3f4f6; --muted:#5b6470; --accent:#0b6bcb; --warn:#fff4d6; --warnfg:#5a4300; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171a; --fg:#e8eaed; --card:#1f2429; --muted:#9aa4af; --accent:#5aa9ff; --warn:#3a3014; --warnfg:#ffe29a; }
+  }
+  body { font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { margin-top: 0; }
+  .card { background: var(--card); border-radius: 12px; padding: 16px 18px; margin: 16px 0; }
+  .warn { background: var(--warn); color: var(--warnfg); }
+  ol li { margin: 8px 0; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 14px; }
+  .install { margin: 24px 0; text-align: center; }
+  code { background: rgba(127,127,127,.2); padding: 1px 5px; border-radius: 4px; }
+</style>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</head>
+<body>
+<main>
+  <h1>Wi-Fi USB Stick</h1>
+  <p>Turns a <strong>LilyGo T-Dongle S3 (with screen)</strong> into a USB flash drive you can manage over Wi-Fi:
+     upload, rename and delete files from your phone or computer, with the mode, IP address and free space shown on the dongle's screen.</p>
+
+  <div class="card warn">
+    <strong>Only for the LilyGo T-Dongle S3 with the LCD screen.</strong>
+    Other boards will not work, and flashing them may leave them needing a manual recovery.
+  </div>
+
+  <div class="card">
+    <h2>Install</h2>
+    <ol>
+      <li>Use <strong>Chrome or Edge on a desktop or laptop</strong>. Firefox, Safari and phones can't flash from a web page.</li>
+      <li><strong>Unplug</strong> the dongle. Press and <strong>hold the button</strong> on it, then plug it in while still holding it. Release after it is plugged in.</li>
+      <li>Click <strong>Install</strong> below and choose the entry that looks like <em>USB JTAG/serial debug unit</em> (or "ESP32-S3") in the pop-up list.</li>
+      <li>Wait for it to finish, then <strong>unplug and re-plug</strong> the dongle <em>without</em> holding the button.</li>
+    </ol>
+    <div class="install">
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate" style="font-size:18px;padding:10px 22px;cursor:pointer">Install firmware</button>
+        <span slot="unsupported">Your browser can't flash devices. Please open this page in Chrome or Edge on a desktop computer.</span>
+        <span slot="not-allowed">Flashing needs a secure (https) page.</span>
+      </esp-web-install-button>
+    </div>
+    <p class="muted">Installing replaces the dongle's firmware and, if you tick "Erase device", its saved Wi-Fi settings. Files on the microSD card are not touched.</p>
+  </div>
+
+  <div class="card">
+    <h2>After installing</h2>
+    <ol>
+      <li>Insert a microSD card formatted as <strong>FAT32</strong>.</li>
+      <li>Plug the dongle in. It shows up as a USB drive on the computer, car or printer it is plugged into.</li>
+      <li>On your phone or laptop, join the dongle's own Wi-Fi network (name and password are in the project README), then open <code>http://192.168.4.1</code>.</li>
+      <li>Use the page to switch to Wi-Fi mode, upload or rename files, or join your home Wi-Fi.</li>
+    </ol>
+  </div>
+
+  <p class="muted"><a id="src" href="https://github.com/">Source code on GitHub</a></p>
+</main>
+<script>
+  // Point the source link at this project's repository when hosted on GitHub Pages.
+  (function () {
+    var m = location.hostname.match(/^(.+)\.github\.io$/);
+    var repo = location.pathname.split("/").filter(Boolean)[0];
+    if (m && repo) document.getElementById("src").href = "https://github.com/" + m[1] + "/" + repo;
+  })();
+</script>
+</body>
+</html>

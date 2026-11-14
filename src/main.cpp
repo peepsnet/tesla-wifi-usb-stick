@@ -152,6 +152,7 @@ bool     cfgInvert = LCD_INVERT, cfgRgb = LCD_RGB_ORDER;
 uint8_t  cfgBlOn = LCD_BL_ON;
 bool     cfgHidden = false;     // hide the stick's own Wi-Fi network name
 int      cfgChannel = 1;        // channel of the stick's own Wi-Fi network (1-13)
+bool     cfgDisplay = USE_DISPLAY;   // false for a dongle without a screen
 
 // Wi-Fi client (station) state
 #define STA_TIMEOUT_MS 20000
@@ -495,7 +496,7 @@ static String fmtBytes(uint64_t b) {
 }
 
 void displayInit() {
-  if (!USE_DISPLAY) return;
+  if (!cfgDisplay) return;
   lcdPtr = new LGFX(cfgOffX, cfgOffY, cfgInvert, cfgRgb);
   lcdPtr->init();
   lcdPtr->setRotation(cfgRotation);
@@ -1153,6 +1154,7 @@ static void applyConfig(const String& k, const String& v) {
   else if (k == "label") { if (v.length() >= 1 && v.length() <= 11) cfgLabel = v; }
   else if (k == "usb")   { cfgStartUsb = (v == "1"); }
   else if (k == "chime") { long n = v.toInt(); if (n > 0) cfgMaxChime = (uint32_t)n; }
+  else if (k == "lcd")   { cfgDisplay = (v == "1"); }                 // 0 = no screen fitted
   else if (k == "offx")  { cfgOffX = (int)v.toInt(); }
   else if (k == "offy")  { cfgOffY = (int)v.toInt(); }
   else if (k == "inv")   { cfgInvert = (v == "1"); }

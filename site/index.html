@@ -39,11 +39,11 @@
 <body>
 <main>
   <h1>Wi-Fi USB Stick</h1>
-  <p>Turns a <strong>LilyGo T-Dongle S3 (with screen)</strong> into a USB flash drive you can manage over Wi-Fi:
-     upload, rename and delete files from your phone or computer, with the mode, IP address and free space shown on the dongle's screen.</p>
+  <p>Turns a <strong>LilyGo T-Dongle S3</strong> (with or without the screen) into a USB flash drive you can manage over Wi-Fi:
+     upload, rename and delete files from your phone or computer. If your dongle has a screen, it shows the mode, IP address and free space.</p>
 
   <div class="card warn">
-    <strong>Only for the LilyGo T-Dongle S3 with the LCD screen.</strong>
+    <strong>Only for the LilyGo T-Dongle S3</strong> (the version with the LCD screen, or the one without).
     Other boards will not work, and flashing them may leave them needing a manual recovery.
   </div>
 
@@ -51,6 +51,10 @@
     <h2>1. Choose your settings</h2>
     <p class="muted">These are written to the dongle when you install. The defaults work fine; just change the Wi-Fi name and password to your own.</p>
     <form id="cfg" class="grid" autocomplete="off" onsubmit="return false">
+      <div class="full">
+        <label class="check"><input type="checkbox" id="lcd"> My dongle has a screen</label>
+        <p class="hint">Untick this for the version without the LCD. The screen settings below are then ignored.</p>
+      </div>
       <div>
         <label for="ssid">Wi-Fi name (the dongle's own network)</label>
         <input type="text" id="ssid" maxlength="32">
@@ -167,7 +171,7 @@
   var CFG_OFFSET = 0xD000, CFG_SIZE = 0x1000;
 
   // ---- defaults (also used by "Reset to defaults") ----
-  var DEFAULTS = { ssid: "Tesla-USB-Stick", pass: "s3xyandiknowit", flip: "0", label: "Boombox",
+  var DEFAULTS = { lcd: true, ssid: "Tesla-USB-Stick", pass: "s3xyandiknowit", flip: "0", label: "Boombox",
                    usb: "1", chime: 1000, channel: 1, hidden: false, bl: "0",
                    invert: true, rgb: false, offx: 26, offy: 1 };
 
@@ -176,10 +180,21 @@
   var baseFw = null, version = "dev", urls = [], timer = null;
 
   function setForm(v) {
+    $("lcd").checked = v.lcd;
     $("ssid").value = v.ssid; $("pass").value = v.pass; $("flip").value = v.flip; $("label").value = v.label;
     $("usb").value = v.usb; $("chime").value = v.chime; $("channel").value = v.channel;
     $("hidden").checked = v.hidden; $("bl").value = v.bl; $("invert").checked = v.invert;
     $("rgb").checked = v.rgb; $("offx").value = v.offx; $("offy").value = v.offy;
+    screenFields();
+  }
+
+  // Grey out the screen-only settings when the dongle has no screen.
+  function screenFields() {
+    var on = $("lcd").checked;
+    ["flip", "bl", "invert", "rgb", "offx", "offy"].forEach(function (id) {
+      $(id).disabled = !on;
+      $(id).parentNode.style.opacity = on ? "" : "0.45";
+    });
   }
 
   function intIn(id, lo, hi, name, errs) {
@@ -191,6 +206,7 @@
 
   function readForm() {
     var errs = [], v = {};
+    v.lcd = $("lcd").checked ? 1 : 0;
     v.ssid = $("ssid").value;
     var sl = enc.encode(v.ssid).length;
     if (sl < 1 || sl > 32) errs.push("Wi-Fi name must be 1 to 32 characters.");
@@ -210,15 +226,19 @@
     v.bl = $("bl").value === "1" ? 1 : 0;
     v.invert = $("invert").checked ? 1 : 0;
     v.rgb = $("rgb").checked ? 1 : 0;
-    v.offx = intIn("offx", 0, 60, "Screen offset X", errs);
-    v.offy = intIn("offy", 0, 60, "Screen offset Y", errs);
+    if (v.lcd) {
+      v.offx = intIn("offx", 0, 60, "Screen offset X", errs);
+      v.offy = intIn("offy", 0, 60, "Screen offset Y", errs);
+    } else {                                   // no screen: these are ignored, keep the defaults
+      v.offx = DEFAULTS.offx; v.offy = DEFAULTS.offy;
+    }
     return { v: v, errs: errs };
   }
 
   function buildConfigBytes(v) {
     // "ssid=..." etc. One setting per line; the first line is the marker the firmware looks for.
     var text = ["WUSBCFG1",
-      "ssid=" + v.ssid, "pass=" + v.pass, "flip=" + v.flip, "label=" + v.label, "usb=" + v.usb,
+      "lcd=" + v.lcd, "ssid=" + v.ssid, "pass=" + v.pass, "flip=" + v.flip, "label=" + v.label, "usb=" + v.usb,
       "chime=" + v.chime, "offx=" + v.offx, "offy=" + v.offy, "inv=" + v.invert, "rgb=" + v.rgb,
       "bl=" + v.bl, "hid=" + v.hidden, "ch=" + v.channel].join("\n") + "\n";
     return enc.encode(text);
@@ -279,6 +299,7 @@
       $("errors").textContent = "Custom settings are unavailable (" + e.message + "). The firmware will be installed with the default settings.";
     });
 
+    $("lcd").addEventListener("change", screenFields);
     $("cfg").addEventListener("input", schedule);
     $("cfg").addEventListener("change", schedule);
     $("reset").addEventListener("click", function () { setForm(DEFAULTS); refresh(); });

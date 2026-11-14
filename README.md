@@ -1,13 +1,13 @@
 # Wi-Fi USB Stick for the LilyGo T-Dongle S3
 
-Turns a **LilyGo T-Dongle S3 (with the LCD screen)** into a USB flash drive that you can
+Turns a **LilyGo T-Dongle S3** (with or without the LCD screen) into a USB flash drive that you can
 manage over Wi-Fi.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a PC, car, printer, etc.
 - Web page (over the dongle's own Wi-Fi) to upload, download, rename, delete files and make folders
 - Can also join your home Wi-Fi (scan, enter a password, or type a hidden network name)
-- Screen shows the mode, the IP address, connected clients or free space
+- Screen (if fitted) shows the mode, the IP address, connected clients or free space
 - "Make Lock Chime" button on `.wav` files, and the BOOT button picks a random `.wav` (under 1 MB)
   and copies it to `/LockChime.wav`
 - Drive is named "Boombox"
@@ -23,6 +23,7 @@ dongle's flash together with the firmware:
 
 | Setting | What it does |
 |---|---|
+| My dongle has a screen | Untick for the version without the LCD; the firmware then skips the screen |
 | Wi-Fi name / password | The dongle's own Wi-Fi network (password 8-63 characters) |
 | Flip screen? | No = normal, Yes = rotate the screen 180 degrees |
 | Drive name | The name shown for the drive on your computer (max 11 characters) |

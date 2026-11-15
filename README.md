@@ -1,21 +1,71 @@
-# Wi-Fi USB Stick for the LilyGo T-Dongle S3
+# Wi-Fi USB Stick for Tesla Lock Chimes (LilyGo T-Dongle S3)
 
-Turns a **LilyGo T-Dongle S3** (with or without the LCD screen) into a USB flash drive that you can
-manage over Wi-Fi.
+A **LilyGo T-Dongle S3** that acts as a USB drive in your Tesla, so you can **change the custom lock
+chime from your phone** instead of pulling a USB drive out of the car and walking it to a computer.
+
+Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` files, tap
+**Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
+a general-purpose Wi-Fi USB drive for other devices.)
 
 ## Features
-- Looks like a normal USB drive (backed by the microSD card) to a PC, car, printer, etc.
-- Web page (over the dongle's own Wi-Fi) to upload, download, rename, delete files and make folders
-- Can also join your home Wi-Fi (scan, enter a password, or type a hidden network name)
+- Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
+- Web page over the dongle's own Wi-Fi: upload, download, rename, delete files, make folders
+- **Play** button on every `.wav` so you can listen before choosing
+- **Make Lock Chime** button on every `.wav`: copies it to `/LockChime.wav` (the original is kept) and
+  warns you if the file doesn't look like something the car will play
+- BOOT button on the stick picks a random `.wav` (16-bit PCM, under the size limit) and makes it the lock chime
+- Can join your home Wi-Fi too: scan, enter a password, or type a hidden network name.
+  Up to 8 networks are remembered and can be deleted individually from the web page
 - Screen (if fitted) shows the mode, the IP address, connected clients or free space
-- "Make Lock Chime" button on `.wav` files, and the BOOT button picks a random `.wav` (under 1 MB)
-  and copies it to `/LockChime.wav`
-- Drive is named "Boombox"
+- Drive is named "Boombox" (changeable)
 
 ## Install (no tools needed)
 Open the installer page (GitHub Pages for this repository) in **Chrome or Edge on a desktop**
 and follow the steps. You must hold the dongle's button while plugging it in so it enters
 flashing mode.
+
+## Tesla lock chime guide
+
+### What the car needs
+Tesla doesn't publish every detail, and owner guides don't always agree, so treat your owner's manual
+as the final word. These are the requirements that most guides agree on:
+
+| Item | Requirement |
+|---|---|
+| File name | Exactly `LockChime.wav` (capital L and C). Beware `LockChime.wav.wav` from hidden extensions |
+| Format | A real **WAV** file (PCM). An MP3 renamed to `.wav` does not work. The safe choice is **16-bit PCM, 44.1 kHz**, mono or stereo |
+| Size | **Under 1 MB**. That is roughly 5 seconds of 16-bit 44.1 kHz stereo. 1-3 seconds is plenty |
+| Location | The **root** of the drive, not inside a folder. (A few sites say `Boombox/LockChime.wav`; if the root doesn't work for you, try that) |
+| How many | Only **one** custom sound is used at a time |
+| Drive format | **FAT32** or **exFAT**, not NTFS. FAT32 is best with this stick |
+| Car | The Lock Sound feature arrived in software **2023.44** and needs the external pedestrian-warning speaker. Availability varies by model, market and software |
+| USB port | One that carries **data** (the glovebox port on newer cars). Some console ports are charge-only |
+| In the car | Open the **Lock Sound** setting and choose the USB/custom sound. On many versions that is Toybox, Boombox, Lock Sound, USB |
+
+### Changing the chime with this stick
+1. Join the stick's Wi-Fi and open `http://192.168.4.1`.
+2. Use **Give drive back / Switch to Wi-Fi mode** at the top: the page can only edit files in *Wi-Fi mode*,
+   when the stick (not the car) owns the card.
+3. Upload `.wav` files, press **Play** to listen, then **Make Lock Chime** on the one you want.
+   The page shows its format and warns about anything unusual (not PCM, not 16-bit, too big, very long).
+4. Switch back to **USB mode** so the car sees the drive again.
+5. Lock the car and listen. Or press the stick's **BOOT button** for a random one.
+
+If the stick is in USB mode when you press BOOT, it briefly takes the card back from the car (the car sees the
+drive eject and reinsert), copies the file, and gives the drive back.
+
+### If the car still plays the old sound
+- Re-open the Lock Sound setting and select USB again. Some owners report the car keeps the old file until they
+  pick another sound and then USB again. Reports differ on whether the car re-reads the file every time or
+  keeps a copy, so test this on your own car.
+- Check the exact name, the size, that it is a real PCM WAV, and that it sits at the root of the drive.
+- Try the other USB port and make sure Lock Sound is switched on.
+
+### Limits and cautions
+- **Don't use the stick as your dashcam or Sentry drive.** The ESP32-S3's USB is full speed only, which is too
+  slow for recording. If the car offers to **format** the drive, decline: that would erase the card.
+- The drive disappears from the car for a moment whenever you switch between USB and Wi-Fi mode.
+- The web page has no login. Anyone who can join the stick's Wi-Fi can change the files.
 
 ## Settings you can choose before flashing
 The installer page has a form. Whatever you pick is written into a small "cfg" area of the

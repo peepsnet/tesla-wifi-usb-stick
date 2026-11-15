@@ -157,10 +157,17 @@ bool     cfgDisplay = USE_DISPLAY;   // false for a dongle without a screen
 // Wi-Fi client (station) state
 #define STA_TIMEOUT_MS 20000
 Preferences prefs;
-String savedSsid, savedPass;     // loaded from flash
-String pendingSsid, pendingPass; // being tried right now
+#define MAX_NETS 8
+struct SavedNet { String ssid; String pass; bool hidden = false; };
+SavedNet nets[MAX_NETS];             // remembered networks (kept in flash)
+int netCount = 0;
+String pendingSsid, pendingPass;     // being tried right now (started from the web page)
+bool pendingHidden = false;
 bool staPending = false;
 uint32_t staStart = 0;
+bool staScanActive = false;          // auto-join: a scan is running
+bool staJoining = false;             // auto-join: connecting to a remembered network
+uint32_t staNextScan = 0, staJoinStart = 0;
 
 // USB-mode free-space counter (reads the FAT table directly)
 volatile uint32_t usbWriteCount = 0;   // bumped on every host write
@@ -179,70 +186,145 @@ bool mountSD() {
 }
 
 // ---------------- Wi-Fi client helpers ----------------
-void loadWifiPrefs() {
-  prefs.begin("wifi", true);
-  savedSsid = prefs.getString("ssid", "");
-  savedPass = prefs.getString("pass", "");
-  prefs.end();
+// Up to MAX_NETS networks are remembered in flash. In Wi-Fi mode the stick scans
+// now and then and joins the strongest remembered network that is in range.
+static int findNet(const String& ssid) {
+  for (int i = 0; i < netCount; i++) {
+    if (nets[i].ssid == ssid) return i;
+  }
+  return -1;
 }
 
-void saveWifiPrefs(const String& ssid, const String& pass) {
-  prefs.begin("wifi", false);
-  prefs.putString("ssid", ssid);
-  prefs.putString("pass", pass);
-  prefs.end();
-  savedSsid = ssid;
-  savedPass = pass;
-}
-
-void clearWifiPrefs() {
+void saveWifiPrefs() {
   prefs.begin("wifi", false);
   prefs.clear();
+  prefs.putInt("n", netCount);
+  for (int i = 0; i < netCount; i++) {
+    String idx = String(i);
+    prefs.putString(("s" + idx).c_str(), nets[i].ssid);
+    prefs.putString(("p" + idx).c_str(), nets[i].pass);
+    prefs.putBool(("h" + idx).c_str(), nets[i].hidden);
+  }
   prefs.end();
-  savedSsid = "";
-  savedPass = "";
 }
 
-// Join the saved network (called when Wi-Fi mode is selected / at boot).
+void loadWifiPrefs() {
+  netCount = 0;
+  prefs.begin("wifi", false);
+  int n = prefs.getInt("n", -1);
+  if (n < 0) {                                   // nothing saved, or the old single-network format
+    String old = prefs.getString("ssid", "");
+    if (old.length() > 0) {
+      nets[0].ssid = old;
+      nets[0].pass = prefs.getString("pass", "");
+      nets[0].hidden = false;
+      netCount = 1;
+    }
+    prefs.end();
+    if (netCount > 0) saveWifiPrefs();           // convert to the new format
+    return;
+  }
+  if (n > MAX_NETS) n = MAX_NETS;
+  int j = 0;
+  for (int i = 0; i < n; i++) {
+    String idx = String(i);
+    String ssid = prefs.getString(("s" + idx).c_str(), "");
+    if (ssid.length() == 0) continue;
+    nets[j].ssid = ssid;
+    nets[j].pass = prefs.getString(("p" + idx).c_str(), "");
+    nets[j].hidden = prefs.getBool(("h" + idx).c_str(), false);
+    j++;
+  }
+  netCount = j;
+  prefs.end();
+}
+
+// Remember a network (or update its password). Returns false if the list is full.
+bool addOrUpdateNet(const String& ssid, const String& pass, bool hidden) {
+  int k = findNet(ssid);
+  if (k < 0) {
+    if (netCount >= MAX_NETS) return false;
+    k = netCount++;
+    nets[k].ssid = ssid;
+  }
+  nets[k].pass = pass;
+  nets[k].hidden = hidden;
+  saveWifiPrefs();
+  return true;
+}
+
+bool deleteNet(const String& ssid) {
+  int k = findNet(ssid);
+  if (k < 0) return false;
+  for (int i = k; i < netCount - 1; i++) nets[i] = nets[i + 1];
+  netCount--;
+  nets[netCount].ssid = "";
+  nets[netCount].pass = "";
+  nets[netCount].hidden = false;
+  saveWifiPrefs();
+  return true;
+}
+
+// Called when Wi-Fi mode is entered: look for a remembered network soon.
 void staConnectSaved() {
-  if (savedSsid.length() == 0) return;
-  WiFi.begin(savedSsid.c_str(), savedPass.c_str());
+  staScanActive = false;
+  staJoining = false;
+  staNextScan = 0;
 }
 
 void staDisconnect() {
   staPending = false;
+  staScanActive = false;
+  staJoining = false;
   WiFi.disconnect(false, false);   // keep the access point running
 }
 
-// ---------------- USB MSC callbacks ----------------
-static int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
-  if (!usbMode) return -1;
-  xSemaphoreTake(sdLock, portMAX_DELAY);
-  bool ok = true;
-  uint8_t* p = (uint8_t*)buffer;
-  for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
-    ok = SD_MMC.readRAW(p + i * 512, lba + i);
-  }
-  xSemaphoreGive(sdLock);
-  return ok ? (int32_t)bufsize : -1;
-}
+// Runs from loop(): in Wi-Fi mode, when not connected to a router, scan every
+// so often and join the strongest remembered network that is visible.
+void staAutoJoinTick() {
+  if (usbMode || staPending || netCount == 0) return;
+  if (WiFi.status() == WL_CONNECTED) { staJoining = false; staScanActive = false; return; }
 
-static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
-  if (!usbMode) return -1;
-  usbWriteCount = usbWriteCount + 1;   // only this callback writes it; loop() just reads
-  xSemaphoreTake(sdLock, portMAX_DELAY);
-  bool ok = true;
-  for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
-    ok = SD_MMC.writeRAW(buffer + i * 512, lba + i);
+  if (staJoining) {
+    if (millis() - staJoinStart > STA_TIMEOUT_MS) {      // gave up on this one
+      staJoining = false;
+      WiFi.disconnect(false, false);
+      staNextScan = millis() + 15000;
+    }
+    return;
   }
-  xSemaphoreGive(sdLock);
-  return ok ? (int32_t)bufsize : -1;
-}
 
-static bool onStartStop(uint8_t power_condition, bool start, bool load_eject) {
-  // Host pressed "Eject" -> hand the card to Wi-Fi mode (done in loop()).
-  if (load_eject && !start) ejectRequested = true;
-  return true;
+  if (staScanActive) {
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) return;
+    staScanActive = false;
+    staNextScan = millis() + 30000;                      // if nothing works, look again in 30 s
+    if (n < 0) { staNextScan = millis() + 10000; return; }
+    int best = -1, bestRssi = -1000;
+    for (int i = 0; i < n; i++) {
+      int k = findNet(WiFi.SSID(i));
+      if (k >= 0 && WiFi.RSSI(i) > bestRssi) { best = k; bestRssi = WiFi.RSSI(i); }
+    }
+    if (best < 0) {                                      // hidden networks never show up in a scan
+      for (int k = 0; k < netCount; k++) {
+        if (nets[k].hidden) { best = k; break; }
+      }
+    }
+    if (best >= 0) {
+      WiFi.begin(nets[best].ssid.c_str(), nets[best].pass.c_str());
+      staJoining = true;
+      staJoinStart = millis();
+    }
+    return;
+  }
+
+  if (millis() >= staNextScan) {
+    // A scan makes the radio hop channels, so don't do it while someone is using
+    // the stick's own Wi-Fi (for example this web page).
+    if (WiFi.softAPgetStationNum() > 0) { staNextScan = millis() + 10000; return; }
+    WiFi.scanNetworks(true);
+    staScanActive = true;
+  }
 }
 
 // ---------------- Free space in USB mode ----------------
@@ -659,17 +741,50 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  summary{cursor:pointer;font-weight:600}
  details input[type=text],details input[type=password],details select{width:100%;box-sizing:border-box;padding:7px;margin:4px 0;font-size:15px}
  #wst{margin:6px 0;font-size:14px}
+ .nrow{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #ddd;font-size:14px}
+ #tesla ul{margin:6px 0 6px 18px;padding:0}
+ #tesla li{margin:4px 0}
+ #tesla h4{margin:12px 0 4px}
+ #tesla .sm{font-size:13px;color:#666}
 </style></head><body>
 <h2>Wi-Fi USB Stick</h2>
 <div id="bar"><span id="mode"></span><br><button id="toggle"></button></div>
 <details id="wifi"><summary>Wi-Fi network (join your router)</summary>
  <div id="wst"></div>
+ <div id="wsaved"></div>
  <button id="scan">Scan for networks</button>
  <select id="nets"><option value="">(scan to list networks)</option></select>
  <input type="text" id="ssid" placeholder="Network name (type it here if not listed)" maxlength="32" autocapitalize="off" autocomplete="off">
  <input type="password" id="pass" placeholder="Password (blank if open)" maxlength="63" autocomplete="off">
  <label><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
- <div><button id="wconn">Connect</button><button id="wforget">Forget saved network</button></div>
+ <div><button id="wconn">Connect</button></div>
+</details>
+<details id="tesla"><summary>Tesla lock chime guide</summary>
+ <h4>What the car needs</h4>
+ <ul>
+  <li><b>File name:</b> exactly <code>LockChime.wav</code> (capital L and C). Watch for <code>LockChime.wav.wav</code>.</li>
+  <li><b>Format:</b> a real WAV file (PCM). An MP3 renamed to .wav will not work. Safe choice: 16-bit PCM, 44.1 kHz, mono or stereo.</li>
+  <li><b>Size:</b> under 1 MB (about 5 seconds of 16-bit 44.1 kHz stereo). Short sounds (1-3 s) work best.</li>
+  <li><b>Location:</b> the root of the drive, not in a folder. (A few sites say <code>/Boombox/</code> instead; if the car ignores the root, try that.)</li>
+  <li><b>One sound only:</b> the car uses a single file named LockChime.wav.</li>
+  <li><b>Drive format:</b> FAT32 or exFAT (not NTFS). FAT32 is best with this stick.</li>
+  <li><b>Car:</b> needs the Lock Sound feature (added in software 2023.44) and the external pedestrian speaker. Use a USB port that carries data (the glovebox port on newer cars).</li>
+  <li><b>Select it in the car:</b> open the Lock Sound setting and choose the USB/custom sound (on many versions: Toybox, Boombox, Lock Sound, USB).</li>
+ </ul>
+ <h4>Changing the chime with this stick</h4>
+ <ul>
+  <li>Upload .wav files here (any folder). Press <b>Play</b> to listen first.</li>
+  <li>Press <b>Make Lock Chime</b> on the one you want. It is copied to /LockChime.wav and the original stays where it is. The page warns you if the file doesn't look right.</li>
+  <li>Press <b>Give drive back to USB host</b> at the top so the car sees the drive again.</li>
+  <li>The BOOT button on the stick picks a random 16-bit PCM .wav (under the size limit) and makes it the lock chime.</li>
+ </ul>
+ <h4>If the car still plays the old sound</h4>
+ <ul>
+  <li>Re-open the Lock Sound setting and select USB again. Some owners report the car keeps the old file until they pick another sound and then USB again.</li>
+  <li>Check the name, the size, that it is a real PCM WAV, and that it is at the root of the drive.</li>
+  <li>Try the other USB port, and make sure Lock Sound is switched on.</li>
+ </ul>
+ <p class="sm">Do not use this stick as the car's dashcam or Sentry drive: its USB is full speed only, and if the car offers to format the drive, say no (that would erase the card). Software and models differ, and reports from owners don't always agree, so your owner's manual is the final word.</p>
 </details>
 <div id="tools">
  <input type="file" id="up" multiple>
@@ -689,6 +804,7 @@ function fmt(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048
 function btn(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;return b}
 
 async function load(){
+ stopPlay();
  msg();
  wstatus();
  const st=await (await fetch('/api/status')).json();
@@ -719,12 +835,21 @@ async function load(){
   c.appendChild(a);
   const s=r.insertCell();s.className='s';s.textContent=f.d?'':fmt(f.s);
   const x=r.insertCell();x.className='a';
-  if(!f.d&&/\.wav$/i.test(f.n)&&!(dir==='/'&&f.n.toLowerCase()==='lockchime.wav'))
+  if(!f.d&&/\.wav$/i.test(f.n)){
+   x.appendChild(playBtn(join(dir,f.n)));
+   if(!(dir==='/'&&f.n.toLowerCase()==='lockchime.wav'))
    x.appendChild(btn('Make Lock Chime',async()=>{
-    if(!confirm('Copy '+f.n+' to /LockChime.wav? An existing LockChime.wav will be replaced.'))return;
+    let m='Copy '+f.n+' to /LockChime.wav?\n(An existing LockChime.wav will be replaced.)';
+    try{
+     const i=await (await api('/api/wavinfo?path='+enc(join(dir,f.n)))).json();
+     if(i.ok)m+='\n\n'+(i.ch==1?'Mono':i.ch==2?'Stereo':i.ch+' channels')+', '+i.bits+'-bit, '+i.rate+' Hz, '+i.secs.toFixed(1)+' s, '+fmt(i.size);
+     if(i.warn.length)m+='\n\nWarnings:\n- '+i.warn.join('\n- ')+'\n\nThe car may not play this file. Copy it anyway?';
+    }catch(e){}
+    if(!confirm(m))return;
     msg('Copying...');
     try{await api('/lockchime?path='+enc(join(dir,f.n)),{method:'POST'});msg();alert('LockChime.wav created at the root of the SD card.');load()}catch(e){msg(e.message)}
    }));
+  }
   x.appendChild(btn('Rename',async()=>{
    const n=prompt('New name',f.n);
    if(!n||n===f.n)return;
@@ -760,10 +885,10 @@ async function wstatus(){
  try{
   const s=await (await fetch('/api/wifi/status')).json();
   let t=s.connected?('Connected to '+s.ssid+' ('+s.rssi+' dBm). Open http://'+s.ip):'Not connected to a network.';
-  if(s.saved)t+=' Saved: '+s.saved+'.';
   if(s.connecting)t='Connecting...';
   else if(s.result==='failed'&&!s.connected)t+=' Last attempt failed (wrong password or out of range).';
   $('#wst').textContent=t;
+  if(!s.connecting)wsaved();
   if(!s.connecting&&wpoll){clearInterval(wpoll);wpoll=null}
  }catch(e){$('#wst').textContent='Reconnecting to the stick...'}
 }
@@ -807,10 +932,45 @@ async function wconnect(force){
  if(r.ok&&!wpoll)wpoll=setInterval(wstatus,2000);
 }
 $('#wconn').onclick=()=>wconnect($('#hid').checked).catch(e=>{$('#wst').textContent=e.message});
-$('#wforget').onclick=async()=>{
- try{await api('/wifi/forget',{method:'POST'})}catch(e){}
- wstatus();
-};
+
+async function wsaved(){
+ try{
+  const r=await (await fetch('/api/wifi/saved')).json();
+  const box=$('#wsaved');box.innerHTML='';
+  if(!r.list.length){box.textContent='No saved networks yet.';return}
+  const h=document.createElement('div');h.textContent='Saved networks:';h.style.fontWeight='600';box.appendChild(h);
+  for(const n of r.list){
+   const row=document.createElement('div');row.className='nrow';
+   const t=document.createElement('span');
+   t.textContent=n.s+(n.c?' (connected)':'')+(n.h?' (hidden)':'');
+   row.appendChild(t);
+   row.appendChild(btn('Delete',async()=>{
+    if(!confirm('Delete the saved network "'+n.s+'"?'))return;
+    try{await api('/wifi/delete',{method:'POST',body:new URLSearchParams({ssid:n.s})})}catch(e){$('#wst').textContent=e.message}
+    wsaved();wstatus();
+   }));
+   box.appendChild(row);
+  }
+ }catch(e){}
+}
+
+let player=null,playBtnEl=null;
+function stopPlay(){
+ if(player){player.pause();player=null}
+ if(playBtnEl){playBtnEl.textContent='Play';playBtnEl=null}
+}
+function playBtn(path){
+ const b=btn('Play',()=>{
+  if(playBtnEl===b){stopPlay();return}
+  stopPlay();
+  player=new Audio('/play?path='+enc(path));
+  playBtnEl=b;b.textContent='Stop';
+  player.onended=stopPlay;
+  player.onerror=()=>{stopPlay();msg('Could not play this file. Is it a valid WAV?')};
+  player.play().catch(()=>{stopPlay()});
+ });
+ return b;
+}
 
 load();
 </script></body></html>)HTML";
@@ -919,6 +1079,71 @@ void handleMkdir() {
   else server.send(500, "text/plain", "Could not create folder");
 }
 
+// ---- WAV header reading (used to warn about files the car may not play) ----
+struct WavInfo {
+  uint16_t fmt, ch, bits;
+  uint32_t rate, dataBytes, fileBytes;
+};
+
+// Reads the RIFF/WAVE header. Returns false if this is not a WAV file at all.
+static bool readWavInfo(File& f, WavInfo& w) {
+  memset(&w, 0, sizeof(w));
+  w.fileBytes = (uint32_t)f.size();
+  uint8_t h[12];
+  f.seek(0);
+  if (f.read(h, 12) != 12 || memcmp(h, "RIFF", 4) != 0 || memcmp(h + 8, "WAVE", 4) != 0) return false;
+  uint32_t pos = 12;
+  bool gotFmt = false;
+  while (pos + 8 <= w.fileBytes) {
+    uint8_t c[8];
+    f.seek(pos);
+    if (f.read(c, 8) != 8) break;
+    uint32_t sz = le32(c + 4);
+    if (memcmp(c, "fmt ", 4) == 0 && sz >= 16) {
+      uint8_t b[16];
+      if (f.read(b, 16) != 16) break;
+      w.fmt = le16(b);
+      w.ch = le16(b + 2);
+      w.rate = le32(b + 4);
+      w.bits = le16(b + 14);
+      gotFmt = true;
+    } else if (memcmp(c, "data", 4) == 0) {
+      w.dataBytes = sz;
+      break;
+    }
+    if (sz > 0x7FFFFFFFUL - pos - 16) break;             // corrupt chunk size
+    pos += 8 + sz + (sz & 1);
+  }
+  return gotFmt;
+}
+
+static float wavSeconds(const WavInfo& w) {
+  if (w.rate == 0 || w.ch == 0 || w.bits == 0) return 0;
+  uint32_t bytes = w.dataBytes;
+  if (bytes == 0 || bytes > w.fileBytes) bytes = (w.fileBytes > 44) ? (w.fileBytes - 44) : 0;
+  return (float)bytes / ((float)w.rate * w.ch * (w.bits / 8.0f));
+}
+
+// JSON string-array body (without the brackets) listing why a file might not work as a lock chime.
+static String wavWarnings(bool ok, const WavInfo& w) {
+  String out;
+  auto add = [&](const String& t) {
+    if (out.length()) out += ',';
+    out += "\"" + t + "\"";
+  };
+  if (!ok) {
+    add("Not a valid WAV file (an MP3 renamed to .wav will not work)");
+    return out;
+  }
+  if (w.fmt != 1) add("Not plain PCM audio. Re-export it as 16-bit PCM WAV");
+  if (w.bits != 16) add("It is " + String((unsigned int)w.bits) + "-bit. 16-bit PCM is the safe choice");
+  if (w.ch > 2) add("More than 2 channels. Use mono or stereo");
+  if (w.fileBytes >= 1000000UL) add("File is " + String((unsigned long)(w.fileBytes / 1000)) + " KB. Tesla needs it under 1 MB");
+  float secs = wavSeconds(w);
+  if (secs > 10.0f) add("Long sound (" + String(secs, 0) + " s). Lock chimes are usually 1 to 5 seconds");
+  return out;
+}
+
 // Copy a .wav to /LockChime.wav at the card root. The original is left untouched.
 // The copy goes to a temp file first so a failed copy never destroys an existing chime.
 // Returns "" on success, otherwise a message describing what went wrong.
@@ -973,6 +1198,43 @@ void handleLockChime() {
   server.send(code, "text/plain", err);
 }
 
+// Stream a file to the browser for listening (the web page's Play button).
+void handlePlay() {
+  if (!requireWifiMode()) return;
+  String path = safePath(server.arg("path"));
+  File f = SD_MMC.open(path, FILE_READ);
+  if (!f || f.isDirectory()) {
+    server.send(404, "text/plain", "File not found.");
+    return;
+  }
+  server.sendHeader("Cache-Control", "no-store");
+  server.streamFile(f, "audio/wav");
+  f.close();
+}
+
+// Describe a WAV file (format, length) and list anything the car may not like.
+void handleWavInfo() {
+  if (!requireWifiMode()) return;
+  String path = safePath(server.arg("path"));
+  File f = SD_MMC.open(path, FILE_READ);
+  if (!f || f.isDirectory()) {
+    server.send(404, "text/plain", "File not found.");
+    return;
+  }
+  WavInfo w;
+  bool ok = readWavInfo(f, w);
+  f.close();
+  String out = "{\"ok\":" + String(ok ? 1 : 0);
+  out += ",\"size\":" + String((unsigned long)w.fileBytes);
+  out += ",\"fmt\":" + String((unsigned int)w.fmt);
+  out += ",\"ch\":" + String((unsigned int)w.ch);
+  out += ",\"rate\":" + String((unsigned long)w.rate);
+  out += ",\"bits\":" + String((unsigned int)w.bits);
+  out += ",\"secs\":" + String(wavSeconds(w), 2);
+  out += ",\"warn\":[" + wavWarnings(ok, w) + "]}";
+  server.send(200, "application/json", out);
+}
+
 // ---- Wi-Fi client handlers ----
 void handleWifiScan() {
   if (WiFi.scanComplete() != WIFI_SCAN_RUNNING) WiFi.scanNetworks(true);   // async
@@ -1009,9 +1271,23 @@ void handleWifiStatus() {
     out += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
     out += ",\"rssi\":" + String(WiFi.RSSI());
   }
-  out += ",\"saved\":\"" + jsonEscape(savedSsid) + "\"";
+  out += ",\"saved\":" + String(netCount);
   out += ",\"connecting\":" + String(staPending ? 1 : 0);
   out += ",\"result\":\"" + staResult + "\"}";
+  server.send(200, "application/json", out);
+}
+
+// The remembered networks (names only - passwords are never sent to the browser).
+void handleWifiSaved() {
+  bool conn = (WiFi.status() == WL_CONNECTED) && !usbMode;
+  String cur = conn ? WiFi.SSID() : String("");
+  String out = "{\"list\":[";
+  for (int i = 0; i < netCount; i++) {
+    if (i) out += ',';
+    out += "{\"s\":\"" + jsonEscape(nets[i].ssid) + "\",\"h\":" + String(nets[i].hidden ? 1 : 0);
+    out += ",\"c\":" + String((conn && nets[i].ssid == cur) ? 1 : 0) + "}";
+  }
+  out += "]}";
   server.send(200, "application/json", out);
 }
 
@@ -1026,6 +1302,10 @@ void handleWifiConnect() {
   }
   if (pass.length() != 0 && (pass.length() < 8 || pass.length() > 63)) {
     server.send(400, "text/plain", "Password must be 8-63 characters (leave blank for an open network).");
+    return;
+  }
+  if (findNet(ssid) < 0 && netCount >= MAX_NETS) {
+    server.send(409, "text/plain", "The saved list is full (" + String(MAX_NETS) + " networks). Delete one first.");
     return;
   }
 
@@ -1047,16 +1327,17 @@ void handleWifiConnect() {
 
   // In USB mode just remember it; it is joined when Wi-Fi mode is selected.
   if (usbMode) {
-    saveWifiPrefs(ssid, pass);
+    addOrUpdateNet(ssid, pass, hidden);
     server.send(200, "text/plain", "Saved. The stick will connect when you switch to Wi-Fi mode.");
     return;
   }
 
   // Connect in the background. Note: joining a router can move the stick's own
   // access point to the router's channel, so your phone may briefly drop and
-  // rejoin the stick's Wi-Fi.
+  // rejoin the stick's Wi-Fi. The network is only remembered once it connects.
   pendingSsid = ssid;
   pendingPass = pass;
+  pendingHidden = hidden;
   staPending = true;
   staResult = "";
   staStart = millis();
@@ -1065,10 +1346,17 @@ void handleWifiConnect() {
   server.send(200, "text/plain", "Connecting...");
 }
 
-void handleWifiForget() {
-  clearWifiPrefs();
-  staDisconnect();
-  staResult = "";
+void handleWifiDelete() {
+  String ssid = server.arg("ssid");
+  bool wasCurrent = !usbMode && WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid;
+  if (!deleteNet(ssid)) {
+    server.send(404, "text/plain", "That network is not in the saved list.");
+    return;
+  }
+  if (wasCurrent) {            // leave it, then try the remaining remembered networks
+    staDisconnect();
+    staConnectSaved();
+  }
   server.send(200, "text/plain", "OK");
 }
 
@@ -1082,6 +1370,12 @@ String lastChime;   // the file picked last time, so a press tries to choose a d
 
 // Walk the card and pick one .wav at random (reservoir sampling: every candidate
 // has the same chance, and no list of paths needs to be kept in memory).
+// A file the car should be able to play: a real PCM WAV, 16-bit, mono or stereo.
+static bool isGoodChimeWav(File& f) {
+  WavInfo w;
+  return readWavInfo(f, w) && w.fmt == 1 && w.bits == 16 && w.ch >= 1 && w.ch <= 2;
+}
+
 static void pickRandomWav(const String& dirPath, int depth, const String& skip, String& chosen, uint32_t& count) {
   File dir = SD_MMC.open(dirPath);
   if (!dir || !dir.isDirectory()) return;
@@ -1097,7 +1391,7 @@ static void pickRandomWav(const String& dirPath, int depth, const String& skip, 
       String lower = name;
       lower.toLowerCase();
       bool isChime = (dirPath == "/" && (lower == "lockchime.wav" || lower == "lockchime.tmp"));
-      if (lower.endsWith(".wav") && !isChime && f.size() > 0 && f.size() < cfgMaxChime && full != skip) {
+      if (lower.endsWith(".wav") && !isChime && f.size() > 0 && f.size() < cfgMaxChime && full != skip && isGoodChimeWav(f)) {
         count++;
         if (esp_random() % count == 0) chosen = full;
       }
@@ -1232,7 +1526,10 @@ void setup() {
   server.on("/api/wifi/networks", HTTP_GET, handleWifiNetworks);
   server.on("/api/wifi/status", HTTP_GET, handleWifiStatus);
   server.on("/wifi/connect", HTTP_POST, handleWifiConnect);
-  server.on("/wifi/forget", HTTP_POST, handleWifiForget);
+  server.on("/api/wifi/saved", HTTP_GET, handleWifiSaved);
+  server.on("/wifi/delete", HTTP_POST, handleWifiDelete);
+  server.on("/play", HTTP_GET, handlePlay);
+  server.on("/api/wavinfo", HTTP_GET, handleWavInfo);
   server.begin();
 
   if (cfgStartUsb && sectorCount > 0) setUsbMode(true);
@@ -1254,16 +1551,17 @@ void loop() {
   // Finish a router connection attempt started from the web page
   if (staPending) {
     if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == pendingSsid) {
-      saveWifiPrefs(pendingSsid, pendingPass);   // only saved once it works
+      addOrUpdateNet(pendingSsid, pendingPass, pendingHidden);   // only remembered once it works
       staPending = false;
       staResult = "";
     } else if (millis() - staStart > STA_TIMEOUT_MS) {
       staPending = false;
       staResult = "failed";
       WiFi.disconnect(false, false);
-      if (!usbMode) staConnectSaved();           // fall back to the old network
+      if (!usbMode) staConnectSaved();           // go back to the remembered networks
     }
   }
+  staAutoJoinTick();   // Wi-Fi mode: look for and join a remembered network
 
   // BOOT button: make a random .wav the lock chime
   static uint32_t lastPress = 0;

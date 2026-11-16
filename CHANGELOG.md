@@ -3,6 +3,16 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## Next: 0.7 (planned)
+- Web page keeps the sound library on `CHIME_STORE` without ejecting the car's drive; only applying a lock chime
+  touches `Boombox`
+
+## 0.6 (2026-11-16)
+- **GitHub releases:** every release has a ready-to-flash `tesla-wifi-usb-stick-vX.Y-full.bin` attached (one image,
+  flashed at address 0x0). Made with Actions, Release, Run workflow; notes come from this file
+- Shared build script (`tools/build-merged.sh`) used by the web installer and the releases
+- No firmware changes apart from the version number
+
 ## 0.5 (2026-11-16)
 First numbered version. Everything built so far:
 
@@ -22,8 +32,3 @@ First numbered version. Everything built so far:
 - **Split card (experimental, step 1):** erase the card and split it into a `Boombox` partition (4 GB, 8 GB or
   half) that the car sees and a `CHIME_STORE` partition the car never sees; survives the car reformatting its
   drive
-
-## Next: 0.6 (planned)
-- GitHub releases with a ready-to-flash `...-full.bin` attached (Actions, Release, Run workflow)
-- Web page keeps the sound library on `CHIME_STORE` without ejecting the car's drive; only applying a lock chime
-  touches `Boombox`

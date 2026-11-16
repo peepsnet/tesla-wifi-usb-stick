@@ -12,7 +12,10 @@ text = open("CHANGELOG.md", encoding="utf-8").read()
 # The section that starts with "## <version>" (for example "## 0.6 (2026-11-20)").
 m = re.search(r"^## " + re.escape(ver) + r"\b.*?$(.*?)(?=^## |\Z)", text, re.M | re.S)
 if not m:
-    sys.exit(f"CHANGELOG.md has no '## {ver}' section - add one before releasing")
+    # "::error::" makes GitHub show the message on the run's summary page.
+    print(f"::error title=Release notes::CHANGELOG.md has no '## {ver}' section. "
+          f"Add one (for example '## {ver} (date)') before releasing.", file=sys.stderr)
+    sys.exit(1)
 section = m.group(1).strip()
 
 print(f"""{section}

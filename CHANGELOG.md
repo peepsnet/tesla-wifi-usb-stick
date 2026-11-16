@@ -3,6 +3,16 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.9 (2026-11-16)
+- **Fixed: First Run ran again after every restart, and made partitions of the wrong size.** The stick measured
+  the first partition instead of the whole card, so it split that space only (half and half when it was 4 GB or
+  less) and then failed to recognise its own layout. It now uses the real card size
+- A card whose storage partition does not reach the end of the card (as left by 0.7 and 0.8) counts as not set
+  up, so First Run formats it again, correctly. **Sounds stored on such a card are erased**
+- **New screen layout:** coloured header bar (orange while the car has the drive, cyan in edit mode) with the
+  version, a usage bar for the car's drive (green, orange from 80%, red from 95%), the mode, whether the address
+  is on the stick's own Wi-Fi or your home Wi-Fi, and the address centred at the bottom
+
 ## 0.8 (2026-11-16)
 - **First Run:** every card now uses the two-part layout. A card that doesn't have it (new, exFAT, used elsewhere)
   is set up automatically when the stick starts: a 4 GB `Boombox` drive for the car and the rest as the
@@ -14,9 +24,6 @@ start-up, at the top of the stick's web page, and on the installer page.
   partition and puts the last lock chime back. The sound library is not touched
 - **Car drive tools** on the web page: a button that erases and re-creates the `Boombox` drive the same way
 - The stick keeps a copy of the current lock chime in the library (hidden file `.LockChime.wav`) for this
-- **New screen layout:** coloured header bar (orange while the car has the drive, cyan in edit mode) with the
-  version, a usage bar for the car's drive (green, orange from 80%, red from 95%), the mode, whether the address
-  is on the stick's own Wi-Fi or your home Wi-Fi, and the address centred at the bottom
 - The Boombox drive is always 4 GB (half the card on small cards); the **SD card setup** section and its size
   choice are gone from the web page
 - The stick always starts as a USB drive; the installer's **When the dongle is plugged in** setting is removed

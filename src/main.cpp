@@ -71,7 +71,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.8"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.9"               // bump for every release (also listed in CHANGELOG.md)
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
 #define MAX_CHIME_BYTES 1000000        // random lock chime only uses .wav files smaller than this
@@ -200,6 +200,13 @@ bool mountSD() {
   return SD_MMC.begin("/sdcard", true);   // true = 1-bit mode
 }
 
+// Sectors on the whole card. (SD_MMC.numSectors() is NOT this: it is the size of
+// the mounted file system, i.e. only the first partition.)
+uint32_t cardSectors() {
+  uint64_t n = SD_MMC.cardSize() / 512;
+  return n > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : (uint32_t)n;
+}
+
 // A card that SD_MMC can't mount (brand new, exFAT, damaged file system) is
 // opened here without a file system, so First Run can still format it.
 static sdmmc_card_t* rawCard = nullptr;
@@ -314,6 +321,7 @@ void readLayout(uint32_t totalSectors) {
   const uint8_t* e2 = b + 462;                       // second partition entry
   uint32_t s = clRd32(e2 + 8), n = clRd32(e2 + 12);
   if (!clIsFat(e2[4]) || s < BOOMBOX_START || n == 0 || s + n > totalSectors || s + n < s) return;
+  if (totalSectors - (s + n) > PART_ALIGN) return;   // storage must reach the end of the card
 
   uint8_t v[512];                                    // is it really our storage partition?
   if (!clReadRetry(s, v)) { layout.readError = true; return; }
@@ -1710,7 +1718,7 @@ void doCardRebuild() {
     return;
   }
   cardProblem = "";
-  sectorCount = SD_MMC.numSectors();
+  sectorCount = cardSectors();
   cardTotal = SD_MMC.totalBytes();
   bool chime = restoreLockChime();
   setUsbMode(true);                    // names the drive and gives it back to the car
@@ -2283,7 +2291,7 @@ void setup() {
     }
   }
   if (mounted) {
-    sectorCount = SD_MMC.numSectors();
+    sectorCount = cardSectors();
     cardTotal = SD_MMC.totalBytes();
     readLayout(sectorCount);       // the car only sees the Boombox part
     if (layout.split) {

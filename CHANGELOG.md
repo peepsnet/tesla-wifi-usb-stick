@@ -3,6 +3,14 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.11 (2026-11-16)
+- **New chime, longer eject:** after copying a lock chime the stick keeps the car's drive away for 5 seconds
+  before giving it back, so the car treats it as a newly plugged-in drive and reads the new sound
+- **The screen shows each step** of setting a chime: EJECT, COPY, the countdown, MOUNT, DONE (and PICK first for
+  a random one)
+- **Button:** a short press now restarts the stick (the car sees it unplugged and plugged in again); holding it
+  for 2 seconds picks the random lock chime. The screen says which will happen while the button is down
+
 ## 0.10 (2026-11-16)
 - **First Run on the screen** uses large type, and the countdown is 15 seconds
 - **First Run without a screen** no longer starts by itself: hold the BOOT button for more than 5 seconds. The

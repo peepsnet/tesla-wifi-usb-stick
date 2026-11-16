@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.10.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.11.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -15,7 +15,8 @@ a general-purpose Wi-Fi USB drive for other devices.)
 - **Play** button on every `.wav` so you can listen before choosing
 - **Make Lock Chime** button on every `.wav`: copies it to `/LockChime.wav` (the original is kept) and
   warns you if the file doesn't look like something the car will play
-- BOOT button on the stick picks a random `.wav` (16-bit PCM, under the size limit) and makes it the lock chime
+- Button on the stick: hold 2 seconds for a random lock chime from the library (16-bit PCM, under the size limit);
+  a short press restarts the stick
 - Joins your home Wi-Fi too, in every mode: scan, enter a password, or type a hidden network name.
   Up to 8 networks are remembered and can be deleted individually from the web page
 - Screen (if fitted) shows the mode, how full the sound library is (with a bar), which Wi-Fi the address is on, and
@@ -51,10 +52,14 @@ as the final word. These are the requirements that most guides agree on:
 1. Join the stick's Wi-Fi and open `http://192.168.4.1`.
 2. Upload `.wav` files to the **Sound library**, press **Play** to listen, then **Make Lock Chime** on the one
    you want. The page shows its format and warns about anything unusual (not PCM, not 16-bit, too big, very long).
-3. Lock the car and listen. Or press the stick's **BOOT button** for a random one from the library.
+3. Lock the car and listen. Or **hold the stick's button for 2 seconds** for a random one from the library.
 
-The car keeps its drive the whole time. To copy the chime, the stick briefly takes the drive back (the car sees it
-eject and reinsert), writes the file, and returns it.
+To copy the chime, the stick takes the drive from the car, writes the file, **waits 5 seconds** and gives the drive
+back (about 10 seconds in all). The wait is there because the car does not always notice a new sound after a quick
+eject and return. The screen shows each step: EJECT, COPY, a countdown, MOUNT, DONE.
+
+If the car still plays the old sound, **press the button briefly**: the stick restarts, which the car sees as
+unplugging it and plugging it back in.
 
 ### If the car still plays the old sound
 - Re-open the Lock Sound setting and select USB again. Some owners report the car keeps the old file until they
@@ -119,8 +124,7 @@ The stick's web page has two tabs:
 - **Car drive** (`Boombox`): what the car sees. Only editable in edit mode, when the stick (not the car) owns it.
 
 **Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
-the stick ejects it for a moment, copies the file, and gives it back. The BOOT button picks its random chime from
-the library.
+the stick takes it away, copies the file, waits 5 seconds and gives it back.
 
 ## Settings you can choose before flashing
 The installer page has a form. Whatever you pick is written into a small "cfg" area of the
@@ -132,7 +136,7 @@ dongle's flash together with the firmware:
 | Wi-Fi name / password | The dongle's own Wi-Fi network (password 8-63 characters) |
 | Flip screen? | No = normal, Yes = rotate the screen 180 degrees |
 | Drive name | The name shown for the drive on your computer (max 11 characters) |
-| Largest random lock chime (KB) | The BOOT button only picks `.wav` files smaller than this |
+| Largest random lock chime (KB) | A long press of the button only picks `.wav` files smaller than this |
 | Advanced: Wi-Fi channel, hide Wi-Fi name | Radio options for the dongle's own network |
 | Advanced: backlight level, invert colours, swap red/blue, screen offsets | Fixes for screens that look wrong |
 

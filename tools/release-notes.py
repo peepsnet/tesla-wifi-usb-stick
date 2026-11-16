@@ -36,6 +36,6 @@ is flashed at address **0x0**. It uses the default settings listed in the README
 
 Command line alternative: `esptool.py --chip esp32s3 write_flash 0x0 {asset}`
 
-Flashing replaces the firmware. Files on the microSD card are not touched (unless you later use **SD card setup**
-on the stick's web page, which erases the card).
+Flashing replaces the firmware and does not touch the microSD card. But note **First Run**: a card that is not
+set up for the stick yet is erased the first time the stick starts with it (see the README).
 """)

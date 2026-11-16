@@ -170,11 +170,13 @@ and the matching values at the top of `src/main.cpp`.
 1. Change `#define FW_VERSION "0.5"` near the top of `src/main.cpp` (for example to `"0.6"`).
 2. Add a `## 0.6 (date)` section at the top of `CHANGELOG.md`, and update "Current version" at the top of
    this README.
-3. Commit and push to `main`. The web installer is rebuilt automatically and shows `0.6 (build abc1234)`.
-4. On GitHub open **Actions**, **Release**, **Run workflow**. It builds the firmware, creates the tag `v0.6`, and
-   publishes a release with the `CHANGELOG.md` notes and a ready-to-flash file attached
-   (`tesla-wifi-usb-stick-v0.6-full.bin`). It refuses to run if `v0.6` already exists, so you can't release the
-   same version twice by accident. (Pushing a tag `v0.6` from your computer does the same.)
+3. Commit and push to `main`. That is all: one workflow builds the firmware once, rebuilds the web installer
+   (it shows `0.6 (build abc1234)`) and, because there is no tag `v0.6` yet, also creates that tag and publishes a
+   release with the `CHANGELOG.md` notes and a ready-to-flash file attached (`tesla-wifi-usb-stick-v0.6-full.bin`).
+
+Pushes that don't change `FW_VERSION` only update the web installer; a version is never released twice. If the
+release step fails (for example `CHANGELOG.md` has no section for the version), the installer is still updated:
+fix the problem and push again, or use **Actions**, **Run workflow**.
 
 ## Flashing a release file
 Each [release](https://github.com/peepsnet/tesla-wifi-usb-stick/releases) has a `...-full.bin` attached. It holds
@@ -188,9 +190,9 @@ web installer instead if you want your own Wi-Fi name and password.
 Command line: `esptool.py --chip esp32s3 write_flash 0x0 tesla-wifi-usb-stick-v0.6-full.bin`
 
 ## How the web installer and releases are built
-Both workflows call `tools/build-merged.sh`, which builds with PlatformIO and merges everything into one image.
-`.github/workflows/build-and-deploy.yml` publishes the web installer to GitHub Pages on every push to `main`;
-`.github/workflows/release.yml` makes the GitHub releases (see above).
+`.github/workflows/build-and-deploy.yml` does both. It calls `tools/build-merged.sh`, which builds with PlatformIO
+and merges everything into one image, then publishes that image with the web installer to GitHub Pages and, for a
+new version, attaches the same file to a GitHub release.
 
 The installer page uses [ESP Web Tools](https://esphome.github.io/esp-web-tools/).
 

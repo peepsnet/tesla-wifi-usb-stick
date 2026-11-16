@@ -1,7 +1,15 @@
-# Builds the firmware with PlatformIO every time you push to "main",
-# then publishes the web installer (site/) plus the freshly built firmware
-# to GitHub Pages.
-name: Build firmware and deploy web installer
+# One workflow for everything that is published. On every push to "main" it
+# builds the firmware ONCE and then, from that same build:
+#
+#   deploy   - publishes the web installer (site/ + the firmware) to GitHub Pages
+#   release  - makes a GitHub release with the ready-to-flash file attached,
+#              but only when the version in src/main.cpp (FW_VERSION) has not
+#              been released yet (there is no tag v<version>)
+#
+# So: bump FW_VERSION, add its section to CHANGELOG.md, push to main, and both
+# the installer and the release appear. Pushes that don't change the version
+# only update the installer. "Run workflow" on the Actions tab does the same.
+name: Build, deploy web installer and release
 
 on:
   push:
@@ -10,19 +18,39 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: publish
+  cancel-in-progress: false   # never stop half-way through a release
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      ver: ${{ steps.ver.outputs.ver }}
+      tag: ${{ steps.ver.outputs.tag }}
+      asset: ${{ steps.ver.outputs.asset }}
+      release: ${{ steps.ver.outputs.release }}
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: ver
+        run: |
+          VER=$(grep -oP '#define FW_VERSION "\K[^"]+' src/main.cpp)
+          if [ -z "$VER" ]; then echo "::error::FW_VERSION not found in src/main.cpp"; exit 1; fi
+          TAG="v$VER"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG is already released: only the web installer is updated."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$TAG has not been released yet: a release will be made."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=tesla-wifi-usb-stick-$TAG-full.bin" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,19 +72,28 @@ jobs:
       - name: Assemble the web page
         run: |
           cp site/index.html site/manifest.json _site/
-          VER=$(grep -oP '#define FW_VERSION "\K[^"]+' src/main.cpp)
-          if [ -z "$VER" ]; then echo "FW_VERSION not found in src/main.cpp"; exit 1; fi
-          echo "Firmware version $VER"
-          sed -i "s/__VERSION__/$VER (build ${GITHUB_SHA::7})/" _site/manifest.json
+          sed -i "s/__VERSION__/${{ steps.ver.outputs.ver }} (build ${GITHUB_SHA::7})/" _site/manifest.json
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
+      - name: Keep the firmware for the release
+        if: steps.ver.outputs.release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: _site/firmware.bin
+          if-no-files-found: error
+          retention-days: 7
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -64,3 +101,38 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  release:
+    needs: build
+    if: needs.build.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Release notes
+        run: |
+          mkdir -p dist
+          python3 tools/release-notes.py "${{ needs.build.outputs.ver }}" "${{ needs.build.outputs.asset }}" > dist/notes.md
+          cat dist/notes.md
+
+      - name: Fetch the firmware built above
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: dist
+
+      - name: Name the file for this version
+        run: mv dist/firmware.bin "dist/${{ needs.build.outputs.asset }}"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Tesla Wi-Fi USB Stick ${{ needs.build.outputs.tag }}
+          body_path: dist/notes.md
+          files: dist/${{ needs.build.outputs.asset }}
+          fail_on_unmatched_files: true

@@ -26,7 +26,8 @@
  *
  * Split card (optional, set up from the web page): the SD card is divided into a
  * small "Boombox" partition that the car sees and a "CHIME_STORE" partition the
- * car never sees. See the CARD LAYOUT section.
+ * car never sees. See the CARD LAYOUT section. On a split card the sound library
+ * lives on CHIME_STORE (mounted at /store) and can be edited in either mode.
  *
  * Wi-Fi: the stick always runs its own access point. In Wi-Fi mode it can
  * also join your router: use the "Wi-Fi network" panel on the web page to
@@ -53,6 +54,10 @@
 #include <WebServer.h>
 #include <FS.h>
 #include <SD_MMC.h>
+#include "vfs_api.h"
+#include "ff.h"
+#include "diskio_impl.h"
+#include "esp_vfs_fat.h"
 #include <Preferences.h>
 #include "esp_partition.h"
 #define LGFX_USE_V1
@@ -63,7 +68,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.6"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.7"               // bump for every release (also listed in CHANGELOG.md)
 #define START_IN_USB_MODE true
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
@@ -452,6 +457,118 @@ const char* formatSplitCard(uint32_t total, int choice, uint32_t volIdSeed) {
   return "";
 }
 // ==== CARD LAYOUT END ====
+
+// The SD card's FatFs drive number. SD_MMC keeps it in a protected member, so
+// read it through a derived class (no object of this class is ever made).
+struct SDMMCPeek : public SDMMCFS {
+  static uint8_t drive() {
+    if (SD_MMC.*(&SDMMCPeek::_card) == nullptr) return 0xFF;
+    return SD_MMC.*(&SDMMCPeek::_pdrv);
+  }
+};
+uint8_t sdCardDrive() { return SDMMCPeek::drive(); }
+
+// ==== STORE FS BEGIN ====
+// The CHIME_STORE partition of a split card, mounted at /store as a second FAT
+// file system. FatFs reaches it through the small disk driver below, which adds
+// the partition's start sector and hands the request to the SD card's own
+// driver. The car never sees this part of the card, so it can be used in USB
+// mode and in Wi-Fi mode alike.
+//
+// Uses, defined before this section: layout (CARD LAYOUT), sdLock, and
+// uint8_t sdCardDrive() which returns the SD card's FatFs drive number (0xFF if none).
+
+static uint8_t storeDrive = 0xFF;      // FatFs drive number of /store
+bool storeMounted = false;
+
+static DSTATUS storeInit(unsigned char) { return 0; }
+static DSTATUS storeStatus(unsigned char) { return 0; }
+
+static DRESULT storeRead(unsigned char, unsigned char* buf, uint32_t sector, unsigned count) {
+  if (!layout.split || (uint64_t)sector + count > layout.stSize) return RES_PARERR;
+  uint8_t sd = sdCardDrive();
+  if (sd == 0xFF) return RES_NOTRDY;
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  DRESULT r = disk_read(sd, buf, layout.stStart + sector, count);
+  xSemaphoreGive(sdLock);
+  return r;
+}
+
+static DRESULT storeWrite(unsigned char, const unsigned char* buf, uint32_t sector, unsigned count) {
+  if (!layout.split || (uint64_t)sector + count > layout.stSize) return RES_PARERR;
+  uint8_t sd = sdCardDrive();
+  if (sd == 0xFF) return RES_NOTRDY;
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  DRESULT r = disk_write(sd, buf, layout.stStart + sector, count);
+  xSemaphoreGive(sdLock);
+  return r;
+}
+
+static DRESULT storeIoctl(unsigned char, unsigned char cmd, void* buf) {
+  switch (cmd) {
+    case CTRL_SYNC:        return RES_OK;             // writes go straight to the card
+    case GET_SECTOR_COUNT: *(LBA_t*)buf = layout.stSize; return RES_OK;
+    case GET_SECTOR_SIZE:  *(WORD*)buf = 512; return RES_OK;
+    case GET_BLOCK_SIZE:   *(DWORD*)buf = 1; return RES_OK;
+    case CTRL_TRIM:        return RES_OK;
+  }
+  return RES_PARERR;
+}
+
+class StoreFS : public fs::FS {
+public:
+  StoreFS() : fs::FS(fs::FSImplPtr(new VFSImpl())) {}
+
+  bool begin(const char* mountpoint = "/store") {
+    if (storeMounted) return true;
+    if (!layout.split) return false;
+    BYTE pdrv = 0xFF;
+    if (ff_diskio_get_drive(&pdrv) != ESP_OK || pdrv == 0xFF) return false;
+    static const ff_diskio_impl_t impl = { &storeInit, &storeStatus, &storeRead, &storeWrite, &storeIoctl };
+    ff_diskio_register(pdrv, &impl);
+    char drv[3] = { (char)('0' + pdrv), ':', 0 };
+    esp_vfs_fat_conf_t conf = { mountpoint, drv, 8 };
+    FATFS* fs = nullptr;
+    if (esp_vfs_fat_register_cfg(&conf, &fs) != ESP_OK) {
+      ff_diskio_register(pdrv, NULL);
+      return false;
+    }
+    if (f_mount(fs, drv, 1) != FR_OK) {               // 1 = check the file system now
+      esp_vfs_fat_unregister_path(mountpoint);
+      ff_diskio_register(pdrv, NULL);
+      return false;
+    }
+    storeDrive = pdrv;
+    storeMounted = true;
+    _impl->mountpoint(mountpoint);
+    return true;
+  }
+
+  void end() {
+    if (!storeMounted) return;
+    char drv[3] = { (char)('0' + storeDrive), ':', 0 };
+    f_mount(NULL, drv, 0);
+    esp_vfs_fat_unregister_path(_impl->mountpoint());
+    ff_diskio_register(storeDrive, NULL);
+    _impl->mountpoint(NULL);
+    storeDrive = 0xFF;
+    storeMounted = false;
+  }
+
+  // Size and free space in bytes (free space comes from the FSInfo sector, so it is quick).
+  bool space(uint64_t& total, uint64_t& freeBytes) {
+    if (!storeMounted) return false;
+    char drv[3] = { (char)('0' + storeDrive), ':', 0 };
+    FATFS* fs = nullptr;
+    DWORD freeClusters = 0;
+    if (f_getfree(drv, &freeClusters, &fs) != FR_OK || !fs) return false;
+    total = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512;
+    freeBytes = (uint64_t)freeClusters * fs->csize * 512;
+    return true;
+  }
+};
+StoreFS STORE;
+// ==== STORE FS END ====
 
 // ---------------- Wi-Fi client helpers ----------------
 // Up to MAX_NETS networks are remembered in flash. In Wi-Fi mode the stick scans
@@ -1030,6 +1147,19 @@ bool requireWifiMode() {
   return true;
 }
 
+// Every file request names a volume: "store" (the sound library on a split card,
+// usable in any mode) or anything else for the car's drive (Wi-Fi mode only).
+bool isStoreVol() { return server.arg("vol") == "store"; }
+fs::FS& volFS() { return isStoreVol() ? (fs::FS&)STORE : (fs::FS&)SD_MMC; }
+bool requireVol() {
+  if (isStoreVol()) {
+    if (storeMounted) return true;
+    server.send(409, "text/plain", "The sound library is not available (the card is not split).");
+    return false;
+  }
+  return requireWifiMode();
+}
+
 // ---------------- Web handlers ----------------
 const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html><head><meta charset="utf-8">
@@ -1057,6 +1187,10 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tesla h4{margin:12px 0 4px}
  #tesla .sm,#card .sm{font-size:13px;color:#666}
  #card select{margin:4px 0}
+ #tabs{display:flex;gap:6px;margin:8px 0 2px}
+ #tabs button{flex:1;padding:8px;border:1px solid #bbb;background:#f4f4f4;border-radius:6px;font-weight:600}
+ #tabs button.on{background:#06c;color:#fff;border-color:#06c}
+ #volinfo{font-size:13px;color:#555;margin:4px 0}
 </style></head><body>
 <h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small></h2>
 <div id="bar"><span id="mode"></span><br><button id="toggle"></button></div>
@@ -1094,9 +1228,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  </ul>
  <h4>Changing the chime with this stick</h4>
  <ul>
-  <li>Upload .wav files here (any folder). Press <b>Play</b> to listen first.</li>
+  <li>Upload .wav files here (any folder). On a split card, keep them in the <b>Sound library</b>: you can add, play and organise them any time, even while the car is using its drive. Press <b>Play</b> to listen first.</li>
   <li>Press <b>Make Lock Chime</b> on the one you want. It is copied to /LockChime.wav and the original stays where it is. The page warns you if the file doesn't look right.</li>
-  <li>Press <b>Give drive back to USB host</b> at the top so the car sees the drive again.</li>
+  <li>Without a split card: press <b>Give drive back to USB host</b> at the top so the car sees the drive again. With a split card the stick does this by itself: Make Lock Chime briefly ejects the car's drive, copies the file, and gives it back.</li>
   <li>The BOOT button on the stick picks a random 16-bit PCM .wav (under the size limit) and makes it the lock chime.</li>
  </ul>
  <h4>If the car still plays the old sound</h4>
@@ -1107,6 +1241,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  </ul>
  <p class="sm">Do not use this stick as the car's dashcam or Sentry drive: its USB is full speed only, and if the car offers to format the drive, say no (that would erase the card). Software and models differ, and reports from owners don't always agree, so your owner's manual is the final word.</p>
 </details>
+<div id="tabs"><button id="tlib">Sound library</button><button id="tcar">Car drive</button></div>
+<div id="volinfo"></div>
 <div id="tools">
  <input type="file" id="up" multiple>
  <button id="mk">New folder</button>
@@ -1115,13 +1251,14 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <div id="msg"></div>
 <table id="files"></table>
 <script>
-let dir='/',usb=false;
+let dir='/',usb=false,vol='car',hasStore=false,dirs={store:'/',car:'/'};
+const V=()=>'&vol='+vol;
 const $=s=>document.querySelector(s);
 const enc=encodeURIComponent;
 const join=(d,n)=>(d==='/'?'':d)+'/'+n;
 const msg=t=>{$('#msg').textContent=t||''};
 async function api(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error(await r.text());return r}
-function fmt(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB'}
+function fmt(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':n<1073741824?(n/1048576).toFixed(1)+' MB':(n/1073741824).toFixed(1)+' GB'}
 function btn(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;return b}
 
 async function load(){
@@ -1130,61 +1267,71 @@ async function load(){
  wstatus();
  const st=await (await fetch('/api/status')).json();
  usb=!!st.usb;
+ if(!!st.store!==hasStore){hasStore=!!st.store;vol=hasStore?'store':'car';dir=dirs[vol]}
  $('#bar').className=usb?'usb':'';
  $('#mode').textContent=usb
-  ?'USB mode: the host owns the drive. Editing is disabled.'
-  :'Wi-Fi mode: you can edit files. The host sees the drive as ejected. '+(st.total?fmt(st.used)+' used of '+fmt(st.total):'');
+  ?'USB mode: the car (host) is using its drive.'+(hasStore?' You can still edit the sound library.':' Editing is disabled.')
+  :'Wi-Fi mode: the car sees its drive as ejected. '+(st.total?'Car drive: '+fmt(st.used)+' used of '+fmt(st.total):'');
  cardinfo(st);
  if(st.ver)$('#ver').textContent='v'+st.ver;
- $('#toggle').textContent=usb?'Switch to Wi-Fi mode (edit files)':'Give drive back to USB host';
- $('#tools').style.display=usb?'none':'';
- $('#path').textContent=usb?'':dir;
+ $('#toggle').textContent=usb?'Switch to Wi-Fi mode (edit the car drive)':'Give drive back to USB host';
+ $('#tabs').style.display=hasStore?'':'none';
+ $('#tlib').className=vol==='store'?'on':'';
+ $('#tcar').className=vol==='car'?'on':'';
+ const editable=vol==='store'||!usb;
+ $('#volinfo').textContent=!hasStore?'':vol==='store'
+  ?'Your sounds, on the stick\'s own storage. The car never sees these files.'+(st.stTotal?' '+fmt(st.stFree*1024)+' free of '+fmt(st.stTotal*1024)+'.':'')
+  :(usb?'The car is using this drive. Switch to Wi-Fi mode to see or edit it.':'What the car sees. Make Lock Chime writes LockChime.wav here.');
+ $('#tools').style.display=editable?'':'none';
+ $('#path').textContent=editable?(hasStore?(vol==='store'?'Library':'Car drive')+': ':'')+dir:'';
  const t=$('#files');t.innerHTML='';
- if(usb)return;
+ if(!editable)return;
  let list;
- try{list=await (await api('/api/list?dir='+enc(dir))).json()}catch(e){msg(e.message);return}
+ try{list=await (await api('/api/list?dir='+enc(dir)+V())).json()}catch(e){msg(e.message);return}
  list.sort((a,b)=>b.d-a.d||a.n.localeCompare(b.n));
  if(dir!=='/'){
   const r=t.insertRow();const c=r.insertCell();c.colSpan=3;
   const a=document.createElement('a');a.textContent='.. (up)';
-  a.onclick=()=>{dir=dir.substring(0,dir.lastIndexOf('/'))||'/';load()};
+  a.onclick=()=>{dir=dirs[vol]=dir.substring(0,dir.lastIndexOf('/'))||'/';load()};
   c.appendChild(a);
  }
  for(const f of list){
   const r=t.insertRow();
   const c=r.insertCell();const a=document.createElement('a');
-  if(f.d){a.textContent='[ '+f.n+' ]';a.onclick=()=>{dir=join(dir,f.n);load()}}
-  else{a.textContent=f.n;a.href='/download?path='+enc(join(dir,f.n))}
+  if(f.d){a.textContent='[ '+f.n+' ]';a.onclick=()=>{dir=dirs[vol]=join(dir,f.n);load()}}
+  else{a.textContent=f.n;a.href='/download?path='+enc(join(dir,f.n))+V()}
   c.appendChild(a);
   const s=r.insertCell();s.className='s';s.textContent=f.d?'':fmt(f.s);
   const x=r.insertCell();x.className='a';
   if(!f.d&&/\.wav$/i.test(f.n)){
    x.appendChild(playBtn(join(dir,f.n)));
-   if(!(dir==='/'&&f.n.toLowerCase()==='lockchime.wav'))
+   if(vol==='store'||!(dir==='/'&&f.n.toLowerCase()==='lockchime.wav'))
    x.appendChild(btn('Make Lock Chime',async()=>{
-    let m='Copy '+f.n+' to /LockChime.wav?\n(An existing LockChime.wav will be replaced.)';
+    let m='Copy '+f.n+' to LockChime.wav on the car drive?\n(An existing LockChime.wav will be replaced.'+(usb?' The car will see its drive eject and come back for a moment.':'')+')';
     try{
-     const i=await (await api('/api/wavinfo?path='+enc(join(dir,f.n)))).json();
+     const i=await (await api('/api/wavinfo?path='+enc(join(dir,f.n))+V())).json();
      if(i.ok)m+='\n\n'+(i.ch==1?'Mono':i.ch==2?'Stereo':i.ch+' channels')+', '+i.bits+'-bit, '+i.rate+' Hz, '+i.secs.toFixed(1)+' s, '+fmt(i.size);
      if(i.warn.length)m+='\n\nWarnings:\n- '+i.warn.join('\n- ')+'\n\nThe car may not play this file. Copy it anyway?';
     }catch(e){}
     if(!confirm(m))return;
     msg('Copying...');
-    try{await api('/lockchime?path='+enc(join(dir,f.n)),{method:'POST'});msg();alert('LockChime.wav created at the root of the SD card.');load()}catch(e){msg(e.message)}
+    try{await api('/lockchime?path='+enc(join(dir,f.n))+V(),{method:'POST'});msg();alert('LockChime.wav is now '+f.n+'.');load()}catch(e){msg(e.message)}
    }));
   }
   x.appendChild(btn('Rename',async()=>{
    const n=prompt('New name',f.n);
    if(!n||n===f.n)return;
-   try{await api('/rename?from='+enc(join(dir,f.n))+'&to='+enc(join(dir,n)),{method:'POST'});load()}catch(e){msg(e.message)}
+   try{await api('/rename?from='+enc(join(dir,f.n))+'&to='+enc(join(dir,n))+V(),{method:'POST'});load()}catch(e){msg(e.message)}
   }));
   x.appendChild(btn('Delete',async()=>{
    if(!confirm('Delete '+f.n+'?'))return;
-   try{await api('/delete?path='+enc(join(dir,f.n)),{method:'POST'});load()}catch(e){msg(e.message)}
+   try{await api('/delete?path='+enc(join(dir,f.n))+V(),{method:'POST'});load()}catch(e){msg(e.message)}
   }));
  }
 }
 
+$('#tlib').onclick=()=>{vol='store';dir=dirs.store;load()};
+$('#tcar').onclick=()=>{vol='car';dir=dirs.car;load()};
 $('#toggle').onclick=async()=>{
  msg('Switching...');
  try{await api('/mode?usb='+(usb?0:1),{method:'POST'})}catch(e){msg(e.message)}
@@ -1192,13 +1339,13 @@ $('#toggle').onclick=async()=>{
 };
 $('#mk').onclick=async()=>{
  const n=prompt('Folder name');if(!n)return;
- try{await api('/mkdir?path='+enc(join(dir,n)),{method:'POST'});load()}catch(e){msg(e.message)}
+ try{await api('/mkdir?path='+enc(join(dir,n))+V(),{method:'POST'});load()}catch(e){msg(e.message)}
 };
 $('#up').onchange=async e=>{
  for(const f of e.target.files){
   msg('Uploading '+f.name+'...');
   const fd=new FormData();fd.append('file',f,f.name);
-  try{await api('/upload?dir='+enc(dir),{method:'POST',body:fd})}catch(err){msg(err.message);break}
+  try{await api('/upload?dir='+enc(dir)+V(),{method:'POST',body:fd})}catch(err){msg(err.message);break}
  }
  e.target.value='';load();
 };
@@ -1286,7 +1433,7 @@ function playBtn(path){
  const b=btn('Play',()=>{
   if(playBtnEl===b){stopPlay();return}
   stopPlay();
-  player=new Audio('/play?path='+enc(path));
+  player=new Audio('/play?path='+enc(path)+V());
   playBtnEl=b;b.textContent='Stop';
   player.onended=stopPlay;
   player.onerror=()=>{stopPlay();msg('Could not play this file. Is it a valid WAV?')};
@@ -1335,6 +1482,12 @@ void handleStatus() {
     out += ",\"bbMB\":" + String((unsigned long)(layout.hostSectors / 2048));
     out += ",\"stMB\":" + String((unsigned long)(layout.stSize / 2048));
   }
+  out += ",\"store\":" + String(storeMounted ? 1 : 0);
+  uint64_t stTotal = 0, stFree = 0;
+  if (STORE.space(stTotal, stFree)) {
+    out += ",\"stTotal\":" + String((unsigned long)(stTotal / 1024));   // KB, fits in 32 bits
+    out += ",\"stFree\":" + String((unsigned long)(stFree / 1024));
+  }
   out += "}";
   server.send(200, "application/json", out);
 }
@@ -1356,6 +1509,7 @@ void doCardSplit() {
   splitChoice = -1;
   if (uploadFile) uploadFile.close();
   staDisconnect();
+  STORE.end();
   xSemaphoreTake(sdLock, portMAX_DELAY);
   formatting = true;
   const char* err = formatSplitCard(layout.total, choice, esp_random());
@@ -1372,9 +1526,9 @@ void doCardSplit() {
 }
 
 void handleList() {
-  if (!requireWifiMode()) return;
+  if (!requireVol()) return;
   String dir = safePath(server.arg("dir"));
-  File root = SD_MMC.open(dir);
+  File root = volFS().open(dir);
   if (!root || !root.isDirectory()) {
     server.send(404, "text/plain", "Folder not found");
     return;
@@ -1395,9 +1549,9 @@ void handleList() {
 }
 
 void handleDownload() {
-  if (!requireWifiMode()) return;
+  if (!requireVol()) return;
   String path = safePath(server.arg("path"));
-  File f = SD_MMC.open(path);
+  File f = volFS().open(path);
   if (!f || f.isDirectory()) {
     server.send(404, "text/plain", "Not found");
     return;
@@ -1409,7 +1563,7 @@ void handleDownload() {
 }
 
 void handleUploadData() {
-  if (usbMode) return;
+  if (isStoreVol() ? !storeMounted : usbMode) return;
   HTTPUpload& up = server.upload();
   if (up.status == UPLOAD_FILE_START) {
     String dir = safePath(server.arg("dir"));
@@ -1418,7 +1572,7 @@ void handleUploadData() {
     name.replace("\\", "_");
     String path = (dir == "/" ? "" : dir) + "/" + name;
     if (uploadFile) uploadFile.close();
-    uploadFile = SD_MMC.open(path, FILE_WRITE);
+    uploadFile = volFS().open(path, FILE_WRITE);
   } else if (up.status == UPLOAD_FILE_WRITE) {
     if (uploadFile) uploadFile.write(up.buf, up.currentSize);
   } else if (up.status == UPLOAD_FILE_END || up.status == UPLOAD_FILE_ABORTED) {
@@ -1427,36 +1581,36 @@ void handleUploadData() {
 }
 
 void handleUploadDone() {
-  if (usbMode) server.send(423, "text/plain", "Drive is in USB mode.");
-  else server.send(200, "text/plain", "OK");
+  if (!requireVol()) return;
+  server.send(200, "text/plain", "OK");
 }
 
 void handleRename() {
-  if (!requireWifiMode()) return;
+  if (!requireVol()) return;
   String from = safePath(server.arg("from"));
   String to = safePath(server.arg("to"));
   if (from == "/" || to == "/") { server.send(400, "text/plain", "Bad name"); return; }
-  if (SD_MMC.exists(to)) { server.send(409, "text/plain", "A file with that name already exists"); return; }
-  if (SD_MMC.rename(from, to)) server.send(200, "text/plain", "OK");
+  if (volFS().exists(to)) { server.send(409, "text/plain", "A file with that name already exists"); return; }
+  if (volFS().rename(from, to)) server.send(200, "text/plain", "OK");
   else server.send(500, "text/plain", "Rename failed");
 }
 
 void handleDelete() {
-  if (!requireWifiMode()) return;
+  if (!requireVol()) return;
   String path = safePath(server.arg("path"));
   if (path == "/") { server.send(400, "text/plain", "Bad path"); return; }
-  File f = SD_MMC.open(path);
+  File f = volFS().open(path);
   bool isDir = f && f.isDirectory();
   if (f) f.close();
-  bool ok = isDir ? SD_MMC.rmdir(path) : SD_MMC.remove(path);
+  bool ok = isDir ? volFS().rmdir(path) : volFS().remove(path);
   if (ok) server.send(200, "text/plain", "OK");
   else server.send(500, "text/plain", isDir ? "Folder must be empty" : "Delete failed");
 }
 
 void handleMkdir() {
-  if (!requireWifiMode()) return;
+  if (!requireVol()) return;
   String path = safePath(server.arg("path"));
-  if (SD_MMC.mkdir(path)) server.send(200, "text/plain", "OK");
+  if (volFS().mkdir(path)) server.send(200, "text/plain", "OK");
   else server.send(500, "text/plain", "Could not create folder");
 }
 
@@ -1528,12 +1682,12 @@ static String wavWarnings(bool ok, const WavInfo& w) {
 // Copy a .wav to /LockChime.wav at the card root. The original is left untouched.
 // The copy goes to a temp file first so a failed copy never destroys an existing chime.
 // Returns "" on success, otherwise a message describing what went wrong.
-String makeLockChime(const String& src) {
+String makeLockChime(fs::FS& srcFs, const String& src, bool fromCar) {
   String lower = src;
   lower.toLowerCase();
   if (!lower.endsWith(".wav")) return "Only .wav files can be used as a lock chime.";
-  if (lower == "/lockchime.wav") return "That file is already the lock chime.";
-  File in = SD_MMC.open(src, FILE_READ);
+  if (fromCar && lower == "/lockchime.wav") return "That file is already the lock chime.";
+  File in = srcFs.open(src, FILE_READ);
   if (!in || in.isDirectory()) return "File not found.";
 
   const char* tmpPath = "/LockChime.tmp";
@@ -1569,9 +1723,19 @@ String makeLockChime(const String& src) {
   return "";
 }
 
+// Copy a chime to the car's drive. If the car is using the drive (USB mode), the
+// stick takes it back for a moment: the car sees the drive eject and come back.
+String applyLockChime(fs::FS& srcFs, const String& src, bool fromCar) {
+  bool wasUsb = usbMode;
+  if (wasUsb) setUsbMode(false);
+  String err = makeLockChime(srcFs, src, fromCar);
+  if (wasUsb) setUsbMode(true);
+  return err;
+}
+
 void handleLockChime() {
-  if (!requireWifiMode()) return;
-  String err = makeLockChime(safePath(server.arg("path")));
+  if (!requireVol()) return;
+  String err = applyLockChime(volFS(), safePath(server.arg("path")), !isStoreVol());
   if (err.length() == 0) { server.send(200, "text/plain", "OK"); return; }
   int code = 500;
   if (err == "File not found.") code = 404;
@@ -1581,9 +1745,9 @@ void handleLockChime() {
 
 // Stream a file to the browser for listening (the web page's Play button).
 void handlePlay() {
-  if (!requireWifiMode()) return;
+  if (!requireVol()) return;
   String path = safePath(server.arg("path"));
-  File f = SD_MMC.open(path, FILE_READ);
+  File f = volFS().open(path, FILE_READ);
   if (!f || f.isDirectory()) {
     server.send(404, "text/plain", "File not found.");
     return;
@@ -1595,9 +1759,9 @@ void handlePlay() {
 
 // Describe a WAV file (format, length) and list anything the car may not like.
 void handleWavInfo() {
-  if (!requireWifiMode()) return;
+  if (!requireVol()) return;
   String path = safePath(server.arg("path"));
-  File f = SD_MMC.open(path, FILE_READ);
+  File f = volFS().open(path, FILE_READ);
   if (!f || f.isDirectory()) {
     server.send(404, "text/plain", "File not found.");
     return;
@@ -1757,8 +1921,8 @@ static bool isGoodChimeWav(File& f) {
   return readWavInfo(f, w) && w.fmt == 1 && w.bits == 16 && w.ch >= 1 && w.ch <= 2;
 }
 
-static void pickRandomWav(const String& dirPath, int depth, const String& skip, String& chosen, uint32_t& count) {
-  File dir = SD_MMC.open(dirPath);
+static void pickRandomWav(fs::FS& vfs, const String& dirPath, int depth, const String& skip, String& chosen, uint32_t& count) {
+  File dir = vfs.open(dirPath);
   if (!dir || !dir.isDirectory()) return;
   File f = dir.openNextFile();
   while (f) {
@@ -1766,12 +1930,12 @@ static void pickRandomWav(const String& dirPath, int depth, const String& skip, 
     String full = (dirPath == "/" ? "" : dirPath) + "/" + name;
     if (f.isDirectory()) {
       if (depth < 6 && !name.startsWith(".") && !name.equalsIgnoreCase("System Volume Information")) {
-        pickRandomWav(full, depth + 1, skip, chosen, count);
+        pickRandomWav(vfs, full, depth + 1, skip, chosen, count);
       }
     } else if (!name.startsWith(".")) {             // skips macOS "._" junk files
       String lower = name;
       lower.toLowerCase();
-      bool isChime = (dirPath == "/" && (lower == "lockchime.wav" || lower == "lockchime.tmp"));
+      bool isChime = (&vfs == (fs::FS*)&SD_MMC && dirPath == "/" && (lower == "lockchime.wav" || lower == "lockchime.tmp"));
       if (lower.endsWith(".wav") && !isChime && f.size() > 0 && f.size() < cfgMaxChime && full != skip && isGoodChimeWav(f)) {
         count++;
         if (esp_random() % count == 0) chosen = full;
@@ -1784,19 +1948,24 @@ static void pickRandomWav(const String& dirPath, int depth, const String& skip, 
 void randomLockChime() {
   bool wasUsb = usbMode;
   showToast("Lock Chime", "Picking a file...", 10000);
-  if (wasUsb) setUsbMode(false);                    // take the card back from the host for a moment
+  // With a split card the sounds come from the library, which is always available.
+  // Otherwise the car's drive is searched, so the stick has to take it back first.
+  bool fromStore = storeMounted;
+  fs::FS& src = fromStore ? (fs::FS&)STORE : (fs::FS&)SD_MMC;
+  if (wasUsb && !fromStore) setUsbMode(false);
 
   String chosen;
   uint32_t count = 0;
-  pickRandomWav("/", 0, lastChime, chosen, count);  // first try: anything except last time's pick
-  if (count == 0) pickRandomWav("/", 0, "", chosen, count);   // only one candidate: allow a repeat
+  pickRandomWav(src, "/", 0, lastChime, chosen, count);  // first try: anything except last time's pick
+  if (count == 0) pickRandomWav(src, "/", 0, "", chosen, count);   // only one candidate: allow a repeat
 
   bool ok = false;
   String line;
   if (count == 0) {
     line = "No suitable .wav files found";
   } else {
-    String err = makeLockChime(chosen);
+    if (wasUsb && fromStore) setUsbMode(false);      // now take the car's drive for the copy
+    String err = makeLockChime(src, chosen, !fromStore);
     if (err.length()) {
       line = err;
     } else {
@@ -1806,7 +1975,7 @@ void randomLockChime() {
     }
   }
 
-  if (wasUsb) setUsbMode(true);                     // hand the drive back to the host
+  if (wasUsb && usbMode == false) setUsbMode(true);  // hand the drive back to the host
   showToast(ok ? "Chime set" : "Chime failed", line, 3000, ok);
 }
 
@@ -1873,6 +2042,7 @@ void setup() {
     sectorCount = SD_MMC.numSectors();
     cardTotal = SD_MMC.totalBytes();
     readLayout(sectorCount);       // split card? then the car only sees the Boombox part
+    if (layout.split) STORE.begin();   // the sound library (CHIME_STORE)
   }
 
   // USB mass storage

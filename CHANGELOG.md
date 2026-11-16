@@ -3,9 +3,15 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
-## Next: 0.7 (planned)
-- Web page keeps the sound library on `CHIME_STORE` without ejecting the car's drive; only applying a lock chime
-  touches `Boombox`
+## 0.7 (2026-11-16)
+- **Sound library on a split card:** the `CHIME_STORE` partition is mounted by the stick, and the web page has
+  **Sound library** and **Car drive** tabs. Upload, play, rename, delete and organise sounds in the library at any
+  time, even while the car is using its drive (USB mode)
+- **Make Lock Chime from the library** works in USB mode too: the stick ejects the car's drive for a moment, writes
+  `LockChime.wav`, and gives the drive back
+- **BOOT button** picks its random chime from the library on a split card (the car's drive is only touched for the
+  copy)
+- Cards that are not split work as before (one drive, edited in Wi-Fi mode)
 
 ## 0.6 (2026-11-16)
 - **GitHub releases:** every release has a ready-to-flash `tesla-wifi-usb-stick-vX.Y-full.bin` attached (one image,

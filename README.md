@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.6.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.7.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -82,9 +82,14 @@ The car is shown a smaller drive that ends where `CHIME_STORE` begins, with a pa
 `Boombox`. If the car (or a PC) reformats or repartitions its drive, the stick keeps the storage partition's entry,
 so `CHIME_STORE` and its files survive. Put the card in a PC card reader and you will see both partitions.
 
-**Status:** this is step 1. The card layout and the car's limited view are in place; the web page still edits the
-`Boombox` partition as before. Next, the web page will keep your sound library on `CHIME_STORE` (no eject needed)
-and only touch `Boombox` when you apply a lock chime.
+On a split card the stick's web page has two tabs:
+- **Sound library** (`CHIME_STORE`): your sounds. Upload, play, rename, delete and organise them at any time, even
+  while the car is using its drive.
+- **Car drive** (`Boombox`): what the car sees. Only editable in Wi-Fi mode, like an unsplit card.
+
+**Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
+the stick ejects it for a moment, copies the file, and gives it back. The BOOT button picks its random chime from
+the library.
 
 Splitting erases everything on the card and can take a few minutes on large cards. The stick restarts when done.
 

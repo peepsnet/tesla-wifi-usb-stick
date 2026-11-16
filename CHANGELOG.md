@@ -14,6 +14,9 @@ start-up, at the top of the stick's web page, and on the installer page.
   partition and puts the last lock chime back. The sound library is not touched
 - **Car drive tools** on the web page: a button that erases and re-creates the `Boombox` drive the same way
 - The stick keeps a copy of the current lock chime in the library (hidden file `.LockChime.wav`) for this
+- **New screen layout:** coloured header bar (orange while the car has the drive, cyan in edit mode) with the
+  version, a usage bar for the car's drive (green, orange from 80%, red from 95%), the mode, whether the address
+  is on the stick's own Wi-Fi or your home Wi-Fi, and the address centred at the bottom
 - The Boombox drive is always 4 GB (half the card on small cards); the **SD card setup** section and its size
   choice are gone from the web page
 - The stick always starts as a USB drive; the installer's **When the dongle is plugged in** setting is removed

@@ -18,7 +18,8 @@ a general-purpose Wi-Fi USB drive for other devices.)
 - BOOT button on the stick picks a random `.wav` (16-bit PCM, under the size limit) and makes it the lock chime
 - Can join your home Wi-Fi too: scan, enter a password, or type a hidden network name.
   Up to 8 networks are remembered and can be deleted individually from the web page
-- Screen (if fitted) shows the mode, the IP address, connected clients or free space
+- Screen (if fitted) shows the mode, how full the car's drive is (with a bar), which Wi-Fi the address is on, and
+  the address to open ([mock-up](docs/screen-mockup.png))
 - Drive is named "Boombox" (changeable)
 - Two-part card: a 4 GB Boombox drive for the car and a hidden sound library for the stick. Any card is set up
   automatically the first time it is used (**this erases it**, see First Run below)

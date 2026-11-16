@@ -3,6 +3,17 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.8 (2026-11-16)
+- **First Run:** every card now uses the two-part layout. A card that doesn't have it (new, exFAT, used elsewhere)
+  is set up automatically when the stick starts: a 4 GB `Boombox` drive for the car and the rest as the
+  `CHIME_STORE` sound library. **This erases the card without asking**, after a 10 second countdown on the screen
+  and the web page (unplug to cancel). The web page shows the progress
+- Cards the stick could not mount before (unformatted, exFAT) are now set up too
+- A card that can't be read is reported as a card error, never formatted
+- The Boombox drive is always 4 GB (half the card on small cards); the **SD card setup** section and its size
+  choice are gone from the web page
+- The stick always starts as a USB drive; the installer's **When the dongle is plugged in** setting is removed
+
 ## 0.7 (2026-11-16)
 - **Sound library on a split card:** the `CHIME_STORE` partition is mounted by the stick, and the web page has
   **Sound library** and **Car drive** tabs. Upload, play, rename, delete and organise sounds in the library at any

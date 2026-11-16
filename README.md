@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.7.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.8.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -20,7 +20,8 @@ a general-purpose Wi-Fi USB drive for other devices.)
   Up to 8 networks are remembered and can be deleted individually from the web page
 - Screen (if fitted) shows the mode, the IP address, connected clients or free space
 - Drive is named "Boombox" (changeable)
-- Optional split card: a small Boombox drive for the car and a hidden storage area for the stick (experimental, see below)
+- Two-part card: a 4 GB Boombox drive for the car and a hidden sound library for the stick. Any card is set up
+  automatically the first time it is used (**this erases it**, see First Run below)
 
 ## Install (no tools needed)
 Open the installer page (GitHub Pages for this repository) in **Chrome or Edge on a desktop**
@@ -47,15 +48,12 @@ as the final word. These are the requirements that most guides agree on:
 
 ### Changing the chime with this stick
 1. Join the stick's Wi-Fi and open `http://192.168.4.1`.
-2. Use **Give drive back / Switch to Wi-Fi mode** at the top: the page can only edit files in *Wi-Fi mode*,
-   when the stick (not the car) owns the card.
-3. Upload `.wav` files, press **Play** to listen, then **Make Lock Chime** on the one you want.
-   The page shows its format and warns about anything unusual (not PCM, not 16-bit, too big, very long).
-4. Switch back to **USB mode** so the car sees the drive again.
-5. Lock the car and listen. Or press the stick's **BOOT button** for a random one.
+2. Upload `.wav` files to the **Sound library**, press **Play** to listen, then **Make Lock Chime** on the one
+   you want. The page shows its format and warns about anything unusual (not PCM, not 16-bit, too big, very long).
+3. Lock the car and listen. Or press the stick's **BOOT button** for a random one from the library.
 
-If the stick is in USB mode when you press BOOT, it briefly takes the card back from the car (the car sees the
-drive eject and reinsert), copies the file, and gives the drive back.
+The car keeps its drive the whole time. To copy the chime, the stick briefly takes the drive back (the car sees it
+eject and reinsert), writes the file, and returns it.
 
 ### If the car still plays the old sound
 - Re-open the Lock Sound setting and select USB again. Some owners report the car keeps the old file until they
@@ -66,32 +64,40 @@ drive eject and reinsert), copies the file, and gives the drive back.
 
 ### Limits and cautions
 - **Don't use the stick as your dashcam or Sentry drive.** The ESP32-S3's USB is full speed only, which is too
-  slow for recording. If the car offers to **format** the drive, decline: that would erase the card.
+  slow for recording. If the car offers to **format** the drive, decline: that would erase the car's drive
+  (the sound library would survive).
 - The drive disappears from the car for a moment whenever you switch between USB and Wi-Fi mode.
 - The web page has no login. Anyone who can join the stick's Wi-Fi can change the files.
 
-## Split card (experimental)
-On the device page, **SD card setup** can erase the card and split it in two:
+## First Run and the card layout
+The stick always uses the card in two parts:
 
 | Partition | Size | Who uses it |
 |---|---|---|
-| `Boombox` (FAT32) | 4 GB (recommended), 8 GB, or half the card | The car. This is the only part it can see |
+| `Boombox` (FAT32) | 4 GB (half the card if it is too small for that) | The car. This is the only part it can see |
 | `CHIME_STORE` (FAT32) | Everything else | The stick only. The car never sees it |
+
+**First Run:** when the stick starts with a card that doesn't have this layout (brand new, exFAT, used in a camera,
+anything), it sets the card up by itself. **This erases everything on the card, without asking.** The screen and
+the web page count down 10 seconds first; unplug the stick during the countdown to keep the card as it is. The
+format takes a few minutes on large cards, the web page shows the progress, and the stick restarts when done.
+The car is not given a drive until the card is set up.
+
+A card that is already set up is never erased again. If the stick can't read the card at all, it reports a card
+error instead of formatting it.
 
 The car is shown a smaller drive that ends where `CHIME_STORE` begins, with a partition table that lists only
 `Boombox`. If the car (or a PC) reformats or repartitions its drive, the stick keeps the storage partition's entry,
 so `CHIME_STORE` and its files survive. Put the card in a PC card reader and you will see both partitions.
 
-On a split card the stick's web page has two tabs:
+The stick's web page has two tabs:
 - **Sound library** (`CHIME_STORE`): your sounds. Upload, play, rename, delete and organise them at any time, even
   while the car is using its drive.
-- **Car drive** (`Boombox`): what the car sees. Only editable in Wi-Fi mode, like an unsplit card.
+- **Car drive** (`Boombox`): what the car sees. Only editable in Wi-Fi mode, when the stick (not the car) owns it.
 
 **Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
 the stick ejects it for a moment, copies the file, and gives it back. The BOOT button picks its random chime from
 the library.
-
-Splitting erases everything on the card and can take a few minutes on large cards. The stick restarts when done.
 
 ## Settings you can choose before flashing
 The installer page has a form. Whatever you pick is written into a small "cfg" area of the
@@ -103,7 +109,6 @@ dongle's flash together with the firmware:
 | Wi-Fi name / password | The dongle's own Wi-Fi network (password 8-63 characters) |
 | Flip screen? | No = normal, Yes = rotate the screen 180 degrees |
 | Drive name | The name shown for the drive on your computer (max 11 characters) |
-| Start mode | Start as a USB drive, or in Wi-Fi edit mode |
 | Largest random lock chime (KB) | The BOOT button only picks `.wav` files smaller than this |
 | Advanced: Wi-Fi channel, hide Wi-Fi name | Radio options for the dongle's own network |
 | Advanced: backlight level, invert colours, swap red/blue, screen offsets | Fixes for screens that look wrong |
@@ -124,11 +129,11 @@ and the matching values at the top of `src/main.cpp`.
   caught early.
 
 ## Important notes
-- Only one side can use the card at a time. In **USB mode** the host owns the card; in
-  **Wi-Fi mode** the dongle owns it and the host sees the drive as ejected.
+- Only one side can use the car's drive at a time. In **USB mode** the car owns it; in **Wi-Fi mode** the dongle
+  owns it and the car sees the drive as ejected. The sound library is always available to the dongle.
 - The web page has no login. Anyone who can join the dongle's Wi-Fi (or your home Wi-Fi when the
   dongle is connected to it) can change the files.
-- Use a **FAT32** card. exFAT cards work as a drive but show "n/a" for free space and aren't renamed.
+- Any microSD card works; First Run formats it (see above). Cards of 4 GB or less are split in half.
 
 ## Building it yourself
 1. Install VS Code + the PlatformIO extension.

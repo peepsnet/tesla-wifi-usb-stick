@@ -24,10 +24,11 @@
  * left in place. If the drive is in USB mode, the stick briefly takes the card
  * back from the host (the host sees an eject/reinsert) to do the copy.
  *
- * Split card (optional, set up from the web page): the SD card is divided into a
- * small "Boombox" partition that the car sees and a "CHIME_STORE" partition the
- * car never sees. See the CARD LAYOUT section. On a split card the sound library
- * lives on CHIME_STORE (mounted at /store) and can be edited in either mode.
+ * Card layout: the SD card is divided into a 4 GB "Boombox" partition that the
+ * car sees and a "CHIME_STORE" partition the car never sees. See the CARD LAYOUT
+ * section. The sound library lives on CHIME_STORE (mounted at /store) and can
+ * be edited in either mode. A card without this layout is erased and set up
+ * automatically when the stick starts (see First Run).
  *
  * Wi-Fi: the stick always runs its own access point. In Wi-Fi mode it can
  * also join your router: use the "Wi-Fi network" panel on the web page to
@@ -60,6 +61,8 @@
 #include "esp_vfs_fat.h"
 #include <Preferences.h>
 #include "esp_partition.h"
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 #include "USB.h"
@@ -68,8 +71,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.7"               // bump for every release (also listed in CHANGELOG.md)
-#define START_IN_USB_MODE true
+#define FW_VERSION "0.8"               // bump for every release (also listed in CHANGELOG.md)
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
 #define MAX_CHIME_BYTES 1000000        // random lock chime only uses .wav files smaller than this
@@ -147,6 +149,9 @@ volatile bool usbMode = false;
 volatile bool ejectRequested = false;
 uint32_t sectorCount = 0;
 uint64_t cardTotal = 0;
+String   cardProblem;                // shown instead of the drive usage when the card can't be used
+bool     firstRun = false;           // the card is not set up yet: First Run will erase and format it
+int      fmtPercent = 0;             // First Run progress
 File uploadFile;
 
 // Runtime settings. They start at the defaults from the config block at the top
@@ -155,7 +160,6 @@ File uploadFile;
 String   cfgSsid = AP_SSID;
 String   cfgPass = AP_PASS;
 String   cfgLabel = VOLUME_LABEL;
-bool     cfgStartUsb = START_IN_USB_MODE;
 uint32_t cfgMaxChime = MAX_CHIME_BYTES;
 int      cfgRotation = LCD_ROTATION;
 int      cfgOffX = LCD_OFFSET_X, cfgOffY = LCD_OFFSET_Y;
@@ -196,12 +200,53 @@ bool mountSD() {
   return SD_MMC.begin("/sdcard", true);   // true = 1-bit mode
 }
 
+// A card that SD_MMC can't mount (brand new, exFAT, damaged file system) is
+// opened here without a file system, so First Run can still format it.
+static sdmmc_card_t* rawCard = nullptr;
+bool rawCardOpen() {
+  static sdmmc_card_t card;
+  sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  host.flags = SDMMC_HOST_FLAG_1BIT;
+  host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+  sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+  slot.clk = (gpio_num_t)SD_CLK;
+  slot.cmd = (gpio_num_t)SD_CMD;
+  slot.d0 = (gpio_num_t)SD_D0;
+  slot.d1 = slot.d2 = slot.d3 = GPIO_NUM_NC;
+  slot.width = 1;
+  slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+  if (sdmmc_host_init() != ESP_OK) return false;
+  if (sdmmc_host_init_slot(host.slot, &slot) != ESP_OK || sdmmc_card_init(&host, &card) != ESP_OK) {
+    sdmmc_host_deinit();
+    return false;
+  }
+  rawCard = &card;
+  return true;
+}
+void rawCardClose() {
+  if (!rawCard) return;
+  rawCard = nullptr;
+  sdmmc_host_deinit();
+}
+uint32_t rawCardSectors() {
+  if (!rawCard) return 0;
+  uint64_t n = (uint64_t)rawCard->csd.capacity * rawCard->csd.sector_size / 512;
+  return n > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : (uint32_t)n;
+}
+
 // Raw one-sector access used by the card layout code below.
-bool formatting = false;                  // true while the card is being split
+bool formatting = false;                  // true while the card is being set up
 static uint32_t fmtWrites = 0;
-bool cardRead(uint32_t lba, uint8_t* buf) { return SD_MMC.readRAW(buf, lba); }
+bool cardRead(uint32_t lba, uint8_t* buf) {
+  if (rawCard) return sdmmc_read_sectors(rawCard, buf, lba, 1) == ESP_OK;
+  return SD_MMC.readRAW(buf, lba);
+}
 bool cardWrite(uint32_t lba, const uint8_t* buf) {
-  if (formatting && (++fmtWrites & 127) == 0) delay(1);   // let other tasks run during a long format
+  if (formatting && (++fmtWrites & 127) == 0) {   // during the long format: let other tasks
+    delay(1);                                     // run and keep the progress page answering
+    server.handleClient();
+  }
+  if (rawCard) return sdmmc_write_sectors(rawCard, buf, lba, 1) == ESP_OK;
   return SD_MMC.writeRAW((uint8_t*)buf, lba);
 }
 void formatProgress(int percent);         // shows progress on the screen (Display section)
@@ -215,7 +260,8 @@ void formatProgress(int percent);         // shows progress on the screen (Displ
 //
 // The car (USB host) is shown a smaller disk that ends where CHIME_STORE starts,
 // and a copy of the MBR with only partition 1 in it, so it can't see or touch
-// the storage partition. A card that was never split works exactly as before.
+// the storage partition. Every card is laid out like this: a card that isn't
+// (new, used elsewhere, any other format) is erased and set up by First Run.
 //
 // This section only uses three hooks, defined before it:
 //   bool cardRead(uint32_t lba, uint8_t* buf)          read one 512-byte sector
@@ -229,6 +275,7 @@ void formatProgress(int percent);         // shows progress on the screen (Displ
 
 struct CardLayout {
   bool     split = false;
+  bool     readError = false;          // the card could not be read: layout unknown
   uint32_t total = 0;                  // sectors on the card
   uint32_t hostSectors = 0;            // sectors the car is shown
   uint32_t bbStart = 0, bbSize = 0;    // Boombox partition
@@ -244,20 +291,33 @@ static void clWr16(uint8_t* p, uint32_t v) { p[0] = v; p[1] = v >> 8; }
 static void clWr32(uint8_t* p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
 static bool clIsFat(uint8_t t) { return t == 0x0B || t == 0x0C; }
 
+// A failed read must never be mistaken for "not split" (that would erase the
+// card), so reads that decide the layout are tried a few times.
+static bool clReadRetry(uint32_t lba, uint8_t* buf) {
+  for (int i = 0; i < 4; i++) {
+    if (cardRead(lba, buf)) return true;
+    delay(50);
+  }
+  return false;
+}
+
 // Work out whether the card is split, and what the car should be shown.
 void readLayout(uint32_t totalSectors) {
   layout = CardLayout();
   layout.total = totalSectors;
   layout.hostSectors = totalSectors;
   uint8_t b[512];
-  if (totalSectors == 0 || !cardRead(0, b) || b[510] != 0x55 || b[511] != 0xAA) return;
+  if (totalSectors == 0) return;
+  if (!clReadRetry(0, b)) { layout.readError = true; return; }
+  if (b[510] != 0x55 || b[511] != 0xAA) return;
 
   const uint8_t* e2 = b + 462;                       // second partition entry
   uint32_t s = clRd32(e2 + 8), n = clRd32(e2 + 12);
   if (!clIsFat(e2[4]) || s < BOOMBOX_START || n == 0 || s + n > totalSectors || s + n < s) return;
 
   uint8_t v[512];                                    // is it really our storage partition?
-  if (!cardRead(s, v) || v[510] != 0x55 || v[511] != 0xAA) return;
+  if (!clReadRetry(s, v)) { layout.readError = true; return; }
+  if (v[510] != 0x55 || v[511] != 0xAA) return;
   if (memcmp(v + 82, "FAT32   ", 8) != 0 || memcmp(v + 71, STORE_LABEL, 11) != 0) return;
 
   layout.split = true;
@@ -412,18 +472,18 @@ static void clEntry(uint8_t* e, uint32_t start, uint32_t size) {
   clWr32(e + 12, size);
 }
 
-// Size choice: 0 = 4 GB Boombox, 1 = 8 GB, 2 = half the card.
-uint32_t boomboxSectors(uint32_t total, int choice) {
+// The Boombox partition is 4 GB; a card too small for that is split in half.
+uint32_t boomboxSectors(uint32_t total) {
   uint32_t usable = total > BOOMBOX_START ? total - BOOMBOX_START : 0;
-  uint32_t want = choice == 0 ? 8388608UL : choice == 1 ? 16777216UL : usable / 2;
+  uint32_t want = 8388608UL;
   if (want + MIN_STORE_SECT + PART_ALIGN > usable) want = usable / 2;   // small card: split it in half
   return want - want % PART_ALIGN;
 }
 
 // Erase the whole card and split it. Returns "" on success, or what went wrong.
 // volIdSeed should be something random (for example esp_random()).
-const char* formatSplitCard(uint32_t total, int choice, uint32_t volIdSeed) {
-  uint32_t bb = boomboxSectors(total, choice);
+const char* formatSplitCard(uint32_t total, uint32_t volIdSeed) {
+  uint32_t bb = boomboxSectors(total);
   uint32_t st = BOOMBOX_START + bb;
   st += (PART_ALIGN - st % PART_ALIGN) % PART_ALIGN;
   if (st >= total) return "Card too small";
@@ -1026,7 +1086,9 @@ void displayUpdate() {
   static uint32_t wifiAt = 0;
   uint64_t total = 0, used = 0;
   bool known = false;
-  if (sectorCount == 0) {
+  if (cardProblem.length()) {
+    usage = cardProblem;
+  } else if (sectorCount == 0) {
     usage = "No SD card";
   } else if (usbMode) {
     if (freeState == 1 && fsTotalBytes > 0) {
@@ -1090,6 +1152,7 @@ void formatProgress(int percent) {
   static int last = -1;
   if (percent == last) return;
   last = percent;
+  fmtPercent = percent;
   showToast("Card setup", String(percent) + "% done. Do not unplug the stick.", 600000, true);
 }
 
@@ -1155,7 +1218,7 @@ fs::FS& volFS() { return isStoreVol() ? (fs::FS&)STORE : (fs::FS&)SD_MMC; }
 bool requireVol() {
   if (isStoreVol()) {
     if (storeMounted) return true;
-    server.send(409, "text/plain", "The sound library is not available (the card is not split).");
+    server.send(409, "text/plain", "The sound library is not available (no usable SD card).");
     return false;
   }
   return requireWifiMode();
@@ -1186,8 +1249,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tesla ul{margin:6px 0 6px 18px;padding:0}
  #tesla li{margin:4px 0}
  #tesla h4{margin:12px 0 4px}
- #tesla .sm,#card .sm{font-size:13px;color:#666}
- #card select{margin:4px 0}
+ #tesla .sm{font-size:13px;color:#666}
  #tabs{display:flex;gap:6px;margin:8px 0 2px}
  #tabs button{flex:1;padding:8px;border:1px solid #bbb;background:#f4f4f4;border-radius:6px;font-weight:600}
  #tabs button.on{background:#06c;color:#fff;border-color:#06c}
@@ -1205,16 +1267,6 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <label><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
  <div><button id="wconn">Connect</button></div>
 </details>
-<details id="card"><summary>SD card setup</summary>
- <div id="cardinfo"></div>
- <p class="sm">Splitting the card gives the car a small "Boombox" drive and keeps a separate "CHIME_STORE" area for the stick that the car never sees. <b>It erases everything on the card.</b> Large cards can take several minutes; the stick restarts when done.</p>
- <select id="cardsize">
-  <option value="0">Boombox 4 GB (recommended)</option>
-  <option value="1">Boombox 8 GB</option>
-  <option value="2">Half the card</option>
- </select>
- <button id="cardsplit">Erase and split the card</button>
-</details>
 <details id="tesla"><summary>Tesla lock chime guide</summary>
  <h4>What the car needs</h4>
  <ul>
@@ -1229,9 +1281,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  </ul>
  <h4>Changing the chime with this stick</h4>
  <ul>
-  <li>Upload .wav files here (any folder). On a split card, keep them in the <b>Sound library</b>: you can add, play and organise them any time, even while the car is using its drive. Press <b>Play</b> to listen first.</li>
-  <li>Press <b>Make Lock Chime</b> on the one you want. It is copied to /LockChime.wav and the original stays where it is. The page warns you if the file doesn't look right.</li>
-  <li>Without a split card: press <b>Give drive back to USB host</b> at the top so the car sees the drive again. With a split card the stick does this by itself: Make Lock Chime briefly ejects the car's drive, copies the file, and gives it back.</li>
+  <li>Upload .wav files to the <b>Sound library</b> (any folder). You can add, play and organise them any time, even while the car is using its drive. Press <b>Play</b> to listen first.</li>
+  <li>Press <b>Make Lock Chime</b> on the one you want. It is copied to /LockChime.wav on the car drive and the original stays in the library. The page warns you if the file doesn't look right.</li>
+  <li>If the car is using its drive, the stick ejects it for a moment, copies the file, and gives it back.</li>
   <li>The BOOT button on the stick picks a random 16-bit PCM .wav (under the size limit) and makes it the lock chime.</li>
  </ul>
  <h4>If the car still plays the old sound</h4>
@@ -1240,7 +1292,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   <li>Check the name, the size, that it is a real PCM WAV, and that it is at the root of the drive.</li>
   <li>Try the other USB port, and make sure Lock Sound is switched on.</li>
  </ul>
- <p class="sm">Do not use this stick as the car's dashcam or Sentry drive: its USB is full speed only, and if the car offers to format the drive, say no (that would erase the card). Software and models differ, and reports from owners don't always agree, so your owner's manual is the final word.</p>
+ <p class="sm">Do not use this stick as the car's dashcam or Sentry drive: its USB is full speed only, and if the car offers to format the drive, say no (the stick's sound library would survive, but the car drive's contents would not). Software and models differ, and reports from owners don't always agree, so your owner's manual is the final word.</p>
 </details>
 <div id="tabs"><button id="tlib">Sound library</button><button id="tcar">Car drive</button></div>
 <div id="volinfo"></div>
@@ -1273,7 +1325,6 @@ async function load(){
  $('#mode').textContent=usb
   ?'USB mode: the car (host) is using its drive.'+(hasStore?' You can still edit the sound library.':' Editing is disabled.')
   :'Wi-Fi mode: the car sees its drive as ejected. '+(st.total?'Car drive: '+fmt(st.used)+' used of '+fmt(st.total):'');
- cardinfo(st);
  if(st.ver)$('#ver').textContent='v'+st.ver;
  $('#toggle').textContent=usb?'Switch to Wi-Fi mode (edit the car drive)':'Give drive back to USB host';
  $('#tabs').style.display=hasStore?'':'none';
@@ -1443,25 +1494,6 @@ function playBtn(path){
  return b;
 }
 
-function gb(mb){return (mb/1024).toFixed(mb<10240?1:0)+' GB'}
-function cardinfo(st){
- const c=$('#cardinfo');
- if(!st.cardMB){c.textContent='No SD card found.';return}
- c.textContent=st.split
-  ?'This card is split: Boombox '+gb(st.bbMB)+' (what the car sees) + storage '+gb(st.stMB)+'.'
-  :'This card is not split: the car sees all '+gb(st.cardMB)+'.';
-}
-$('#cardsplit').onclick=async()=>{
- if(usb){alert('Switch to Wi-Fi mode first (button at the top).');return}
- const size=$('#cardsize').value;
- const a=prompt('This ERASES EVERYTHING on the SD card, including any recordings and sounds.\n\nType ERASE to continue.');
- if(a!=='ERASE')return;
- try{
-  await api('/card/split',{method:'POST',body:new URLSearchParams({size,confirm:'ERASE'})});
-  msg('Setting up the card. This can take a few minutes on large cards. The stick restarts when it is done; then reconnect to its Wi-Fi and reload this page.');
- }catch(e){msg(e.message)}
-};
-
 load();
 </script></body></html>)HTML";
 
@@ -1477,12 +1509,7 @@ void handleStatus() {
     out += ",\"used\":" + String((uint32_t)(SD_MMC.usedBytes()));
   }
   out += ",\"ver\":\"" FW_VERSION "\"";
-  out += ",\"cardMB\":" + String((unsigned long)(layout.total / 2048));
-  out += ",\"split\":" + String(layout.split ? 1 : 0);
-  if (layout.split) {
-    out += ",\"bbMB\":" + String((unsigned long)(layout.hostSectors / 2048));
-    out += ",\"stMB\":" + String((unsigned long)(layout.stSize / 2048));
-  }
+  if (cardProblem.length()) out += ",\"problem\":\"" + jsonEscape(cardProblem) + "\"";
   out += ",\"store\":" + String(storeMounted ? 1 : 0);
   uint64_t stTotal = 0, stFree = 0;
   if (STORE.space(stTotal, stFree)) {
@@ -1493,36 +1520,96 @@ void handleStatus() {
   server.send(200, "application/json", out);
 }
 
-// Erase the card and split it (the actual work runs from loop(), then the stick restarts).
-int splitChoice = -1;
-void handleCardSplit() {
-  if (!requireWifiMode()) return;
-  if (layout.total == 0) { server.send(400, "text/plain", "No SD card found."); return; }
-  if (server.arg("confirm") != "ERASE") { server.send(400, "text/plain", "Not confirmed."); return; }
-  int c = server.arg("size").toInt();
-  if (c < 0 || c > 2) c = 0;
-  splitChoice = c;
-  server.send(200, "text/plain", "OK");
+// ---------------- First Run ----------------
+// Every card must have the two-partition layout (see CARD LAYOUT). A card that
+// doesn't (new, exFAT, used somewhere else) is erased and set up automatically:
+// a short countdown (unplug the stick to cancel), then the format, then a
+// restart. Until then the car is not given a drive, and the web server only
+// serves a small progress page, so nothing else can touch the card.
+#define FIRST_RUN_WAIT_MS 10000
+const char FIRSTRUN_HTML[] PROGMEM = R"HTML(<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wi-Fi USB Stick - First Run</title>
+<style>
+ body{font:16px system-ui,sans-serif;margin:0 auto;padding:12px;max-width:720px}
+ #box{padding:14px;border-radius:8px;background:#fed}
+ #bar{height:14px;border-radius:7px;background:#ddd;margin:12px 0;overflow:hidden}
+ #fill{height:100%;width:0;background:#06c}
+ .sm{font-size:13px;color:#666}
+</style></head><body>
+<h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small></h2>
+<div id="box"><b>First Run: setting up the SD card</b>
+ <div id="txt">Checking...</div>
+ <div id="bar"><div id="fill"></div></div>
+ <div class="sm">The card is erased and split into a 4 GB "Boombox" drive for the car and a "CHIME_STORE" sound library for the stick. Do not unplug the stick once this has started. It restarts when done; this page then reloads by itself (rejoin the stick's Wi-Fi if your phone dropped it).</div>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+async function tick(){
+ try{
+  const st=await (await fetch('/api/status')).json();
+  if(!st.firstRun){location.reload();return}
+  if(st.ver)$('#ver').textContent='v'+st.ver;
+  $('#fill').style.width=st.pct+'%';
+  $('#txt').textContent=st.err?'Card setup failed: '+st.err+'. Unplug the stick, check or replace the card, and plug it in again.'
+   :st.wait?'This card ('+(st.cardMB/1024).toFixed(1)+' GB) is not set up yet. Erasing it in '+st.wait+' s. Unplug the stick now to keep what is on the card.'
+   :'Formatting: '+st.pct+'% done.';
+ }catch(e){$('#txt').textContent='Waiting for the stick...'}
+ setTimeout(tick,1500);
+}
+tick();
+</script></body></html>)HTML";
+
+String firstRunErr;
+uint32_t firstRunAt = 0;               // when the countdown started
+bool firstRunDone = false;             // the format was attempted (and failed, or the stick would have restarted)
+
+static uint32_t firstRunWait() {       // seconds left on the countdown
+  uint32_t el = millis() - firstRunAt;
+  return (firstRunDone || el >= FIRST_RUN_WAIT_MS) ? 0 : (FIRST_RUN_WAIT_MS - el + 999) / 1000;
 }
 
-void doCardSplit() {
-  int choice = splitChoice;
-  splitChoice = -1;
-  if (uploadFile) uploadFile.close();
-  staDisconnect();
-  STORE.end();
+void handleFirstRunRoot() {
+  server.send_P(200, "text/html", FIRSTRUN_HTML);
+}
+
+void handleFirstRunStatus() {
+  String out = "{\"firstRun\":1,\"ver\":\"" FW_VERSION "\"";
+  out += ",\"cardMB\":" + String((unsigned long)(layout.total / 2048));
+  out += ",\"wait\":" + String((unsigned long)firstRunWait());
+  out += ",\"pct\":" + String(fmtPercent);
+  out += ",\"err\":\"" + jsonEscape(firstRunErr) + "\"}";
+  server.send(200, "application/json", out);
+}
+
+// Called from loop() while firstRun is set.
+void firstRunTick() {
+  if (firstRunDone) return;
+  uint32_t wait = firstRunWait();
+  if (wait > 0) {
+    static uint32_t shown = 0;
+    if (wait != shown) {
+      shown = wait;
+      showToast("First Run", "New card: erasing it in " + String((unsigned long)wait) + " s. Unplug to cancel.", 5000, false);
+    }
+    return;
+  }
+  firstRunDone = true;
   xSemaphoreTake(sdLock, portMAX_DELAY);
   formatting = true;
-  const char* err = formatSplitCard(layout.total, choice, esp_random());
+  const char* err = formatSplitCard(layout.total, esp_random());
   formatting = false;
   xSemaphoreGive(sdLock);
-  if (err[0]) {
-    showToast("Card setup failed", err, 15000, false);
-    delay(15000);
-  } else {
-    showToast("Card ready", "Restarting...", 3000, true);
-    delay(2000);
+  if (err[0]) {                        // stay up and say so (no restart: that would only try again)
+    firstRunErr = err;
+    cardProblem = "Card setup failed";
+    showToast("Setup failed", err, 15000, false);
+    return;
   }
+  showToast("Card ready", "Restarting...", 3000, true);
+  uint32_t t = millis();
+  while (millis() - t < 2500) { server.handleClient(); delay(5); }   // let the page see 100%
   ESP.restart();                       // start fresh with the new layout
 }
 
@@ -1997,7 +2084,6 @@ static void applyConfig(const String& k, const String& v) {
   else if (k == "pass")  { if (v.length() >= 8 && v.length() <= 63) cfgPass = v; }
   else if (k == "flip")  { cfgRotation = (v == "1") ? 1 : 3; }       // Flip screen? Yes = 1, No = 3
   else if (k == "label") { if (v.length() >= 1 && v.length() <= 11) cfgLabel = v; }
-  else if (k == "usb")   { cfgStartUsb = (v == "1"); }
   else if (k == "chime") { long n = v.toInt(); if (n > 0) cfgMaxChime = (uint32_t)n; }
   else if (k == "lcd")   { cfgDisplay = (v == "1"); }                 // 0 = no screen fitted
   else if (k == "offx")  { cfgOffX = (int)v.toInt(); }
@@ -2036,14 +2122,27 @@ void setup() {
   loadConfig();        // settings written by the web installer (if any)
   displayInit();
 
-  if (!mountSD()) {
-    // No card: keep the web UI up so you can see something is wrong.
-    cardTotal = 0;
-  } else {
+  if (mountSD()) {
     sectorCount = SD_MMC.numSectors();
     cardTotal = SD_MMC.totalBytes();
-    readLayout(sectorCount);       // split card? then the car only sees the Boombox part
+    readLayout(sectorCount);       // the car only sees the Boombox part
     if (layout.split) STORE.begin();   // the sound library (CHIME_STORE)
+    else if (!layout.readError) firstRun = true;      // an ordinary one-partition card
+  } else if (rawCardOpen()) {
+    // There is a card, but no file system the stick can mount.
+    readLayout(rawCardSectors());
+    if (!layout.split && !layout.readError) {
+      firstRun = true;             // new, exFAT or otherwise unusable: set it up
+    } else {                       // set up, but the car's drive is damaged: don't erase the library
+      rawCardClose();
+      if (layout.split) cardProblem = "Car drive unreadable";
+    }
+  }
+  // No card at all: keep the web UI up so you can see something is wrong.
+  if (layout.readError) cardProblem = "SD card read error";
+  if (!firstRun && !layout.split) {                   // nothing usable: the car gets no drive
+    sectorCount = 0;
+    cardTotal = 0;
   }
 
   // USB mass storage
@@ -2065,9 +2164,17 @@ void setup() {
   WiFi.softAP(cfgSsid.c_str(), cfgPass.c_str(), cfgChannel, cfgHidden);
   loadWifiPrefs();
 
+  if (firstRun) {
+    // Only the progress page: no file or mode requests until the card is set up.
+    server.on("/", HTTP_GET, handleFirstRunRoot);
+    server.on("/api/status", HTTP_GET, handleFirstRunStatus);
+    server.begin();
+    firstRunAt = millis();
+    return;
+  }
+
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
-  server.on("/card/split", HTTP_POST, handleCardSplit);
   server.on("/api/list", HTTP_GET, handleList);
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/upload", HTTP_POST, handleUploadDone, handleUploadData);
@@ -2086,20 +2193,24 @@ void setup() {
   server.on("/api/wavinfo", HTTP_GET, handleWavInfo);
   server.begin();
 
-  if (cfgStartUsb && sectorCount > 0) setUsbMode(true);
-  else staConnectSaved();          // starting in Wi-Fi mode: join saved router
+  if (sectorCount > 0) setUsbMode(true);   // the car gets its drive straight away
+  else staConnectSaved();          // no usable card: join the saved router so the page is easy to reach
 }
 
 void loop() {
   server.handleClient();
+
+  if (firstRun) {                  // the card is being set up: nothing else runs
+    firstRunTick();
+    displayUpdate();
+    return;
+  }
 
   // Host ejected the drive -> switch to Wi-Fi edit mode
   if (ejectRequested) {
     ejectRequested = false;
     if (usbMode) setUsbMode(false);
   }
-
-  if (splitChoice >= 0) doCardSplit();   // never returns (restarts the stick)
 
   freeScanTick();      // USB mode: count free clusters in small slices
   displayUpdate();     // redraws only when something changed

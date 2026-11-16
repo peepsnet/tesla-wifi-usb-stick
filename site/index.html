@@ -151,16 +151,23 @@
     <h2>3. First Run</h2>
     <ol>
       <li>Insert any microSD card. It does not need to be formatted first.</li>
-      <li>Plug the dongle in. If the card is not set up yet, the dongle counts down 10 seconds and then
-          sets it up by itself: a 4 GB <strong>Boombox</strong> drive for the car and the rest as a sound library
-          (<strong>CHIME_STORE</strong>) that only the dongle uses. This takes a few minutes; the dongle restarts when done.</li>
+      <li>Plug the dongle in. If the card is not set up yet, it is erased and set up: a 4 GB <strong>Boombox</strong>
+          drive for the car and the rest as a sound library (<strong>CHIME_STORE</strong>).
+          <ul>
+            <li><strong>Dongle with a screen:</strong> it counts down 15 seconds and then starts by itself.</li>
+            <li><strong>Dongle without a screen:</strong> nothing happens until you <strong>hold its button down for
+                more than 5 seconds</strong>, then let go.</li>
+          </ul>
+          Formatting takes a few minutes and the dongle restarts when done. <strong>Without a screen, plug it into a
+          computer and wait until it shows up as a USB drive before you unplug it</strong>: that is the sign it has finished.</li>
       <li>On your phone or laptop, join the Wi-Fi network you chose above, then open <code>http://192.168.4.1</code>.
           During First Run the page shows the progress.</li>
       <li>Upload sounds to the library and tap <em>Make Lock Chime</em>. The car sees the Boombox drive the whole time.</li>
     </ol>
     <div class="card warn" style="margin-bottom:0">
-      <strong>First Run erases everything on the card</strong>, without asking. Only insert a card you don't need the
-      contents of. To cancel, unplug the dongle during the 10 second countdown.
+      <strong>First Run erases everything on the card.</strong> Only insert a card you don't need the
+      contents of. With a screen, unplug the dongle during the 15 second countdown to cancel. Without a screen,
+      nothing is erased until you hold the button.
     </div>
   </div>
 

@@ -2,46 +2,40 @@
  * Wi-Fi USB Stick  (ESP32-S3, Arduino-ESP32 core 3.x)
  * Version: see FW_VERSION below, and CHANGELOG.md
  *
- * Plugs into a USB host and looks like a normal flash drive (backed by a
- * microSD card). Join the stick's Wi-Fi network, open http://192.168.4.1
- * and upload / rename / delete / download files.
+ * Plugs into a car (or computer) and looks like a normal flash drive, backed
+ * by a microSD card. Join the stick's Wi-Fi network, open http://192.168.4.1
+ * and manage your sounds / choose the car's lock chime.
  *
- * IMPORTANT: only ONE side may own the card at a time, otherwise the FAT
- * filesystem gets corrupted. So the stick has two modes:
+ * Card layout: the SD card is divided into a 4 GB "Boombox" partition (the
+ * car's drive) and a "CHIME_STORE" partition (the sound library, mounted at
+ * /store). See the CARD LAYOUT section. A card without this layout is erased
+ * and set up when the stick starts (see First Run).
  *
- *   USB mode  - the host owns the card. Web page is read-only (disabled).
- *   Wi-Fi mode - the ESP32 owns the card. The host sees the drive as "ejected".
+ * IMPORTANT: only ONE side may use a partition at a time, otherwise its FAT
+ * file system gets corrupted. So the stick has two modes:
  *
- * Switch modes with the web page button, or by ejecting the drive in the
- * host OS (-> switches to Wi-Fi mode).
+ *   USB mode  - the car has the Boombox drive; the stick has the library.
+ *   Edit mode - the stick has the Boombox drive; a computer on the USB port
+ *               is shown the library as a drive (the web page can take it back).
+ *
+ * Switch modes with the web page button. Ejecting a drive on the host makes
+ * the stick take that drive back.
  *
  * Settings: the values in the config block below are only DEFAULTS. The web
  * installer can write a small "cfg" block into flash (Wi-Fi name/password,
  * screen flip, drive name, ...) which overrides them at boot (see loadConfig).
  *
- * BOOT button: picks a random .wav (smaller than the size limit) from
- * anywhere on the card and copies it to /LockChime.wav. The original file is
- * left in place. If the drive is in USB mode, the stick briefly takes the card
- * back from the host (the host sees an eject/reinsert) to do the copy.
+ * BOOT button: picks a random .wav (smaller than the size limit) from the
+ * library and copies it to /LockChime.wav on the car's drive. In USB mode the
+ * stick briefly takes the drive back from the car (it sees an eject/reinsert).
  *
- * Card layout: the SD card is divided into a 4 GB "Boombox" partition that the
- * car sees and a "CHIME_STORE" partition the car never sees. See the CARD LAYOUT
- * section. The sound library lives on CHIME_STORE (mounted at /store) and can
- * be edited in either mode. A card without this layout is erased and set up
- * automatically when the stick starts (see First Run).
+ * Wi-Fi: the stick always runs its own access point. It can also join your
+ * router, in every mode: use the "Wi-Fi network" panel on the web page to
+ * scan, enter a password and connect. Credentials are saved in flash.
  *
- * Wi-Fi: the stick always runs its own access point. In Wi-Fi mode it can
- * also join your router: use the "Wi-Fi network" panel on the web page to
- * scan, enter a password and connect. Credentials are saved in flash and
- * reused every time Wi-Fi mode is selected.
- *
- * Display (T-Dongle S3 with LCD):
- *   Wi-Fi AP mode     -> mode, stick IP, number of connected clients
- *   Wi-Fi client mode -> mode, IP address given by your router
- *   USB mode          -> mode, free space left on the card
+ * Display (T-Dongle S3 with LCD): mode, how full the sound library is, which
+ * network the address is on, and the address to open.
  * Needs the "LovyanGFX" library by lovyan03 (declared in platformio.ini).
- * Free space in USB mode is counted by reading the card's FAT table
- * directly (FAT16/FAT32 only; exFAT shows "n/a").
  *
  * PlatformIO: see platformio.ini (uses the pioarduino platform for
  * Arduino-ESP32 core 3.x, USB-OTG/TinyUSB mode, CDC on boot disabled).
@@ -71,7 +65,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.9"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.10"               // bump for every release (also listed in CHANGELOG.md)
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
 #define MAX_CHIME_BYTES 1000000        // random lock chime only uses .wav files smaller than this
@@ -145,7 +139,13 @@ LGFX* lcdPtr = nullptr;     // created in displayInit(), after the settings are 
 USBMSC msc;
 WebServer server(80);
 SemaphoreHandle_t sdLock;
-volatile bool usbMode = false;
+volatile bool usbMode = false;        // true: the car has its drive. false: edit mode, the stick has it
+// What the USB host (car or computer) is shown right now:
+//   HOST_CAR    the Boombox drive (always and only in USB mode)
+//   HOST_STORE  the sound library, as a drive for a computer (edit mode, when chosen)
+//   HOST_NONE   nothing: the drive looks ejected
+enum HostView { HOST_NONE, HOST_CAR, HOST_STORE };
+volatile HostView hostView = HOST_NONE;
 volatile bool ejectRequested = false;
 uint32_t sectorCount = 0;
 uint64_t cardTotal = 0;
@@ -277,7 +277,7 @@ void formatProgress(int percent);         // shows progress on the screen (Displ
 
 #define BOOMBOX_START  2048UL          // 1 MB, the usual first-partition offset
 #define PART_ALIGN     8192UL          // 4 MB alignment (good for SD card speed)
-#define STORE_LABEL    "CHIME_STORE"   // 11 characters, marks a split card
+#define STORE_LABEL    "CHIME_STORE"   // 11 characters, the name of the sound library volume
 #define MIN_STORE_SECT 2097152UL       // keep at least 1 GB for storage
 
 struct CardLayout {
@@ -326,7 +326,8 @@ void readLayout(uint32_t totalSectors) {
   uint8_t v[512];                                    // is it really our storage partition?
   if (!clReadRetry(s, v)) { layout.readError = true; return; }
   if (v[510] != 0x55 || v[511] != 0xAA) return;
-  if (memcmp(v + 82, "FAT32   ", 8) != 0 || memcmp(v + 71, STORE_LABEL, 11) != 0) return;
+  // (The volume label is not checked: a computer may rename or reformat the library.)
+  if (memcmp(v + 82, "FAT32   ", 8) != 0) return;
 
   layout.split = true;
   layout.stStart = s;
@@ -469,6 +470,29 @@ static bool writeFat32(const Fat32Plan& p, const char* label, uint32_t volId, ui
   s[510] = 0x55; s[511] = 0xAA;
   if (!cardWrite(p.start + 6, s)) return false;                         // backup copy first
   return cardWrite(p.start, s);
+}
+
+// ---- What a computer sees in edit mode: the sound library only ----
+// The whole card is shown, with a partition table that lists just the storage
+// partition (at its real position, so nothing in its file system has to change).
+// Everything outside that partition reads as empty and ignores writes, so the
+// computer can't touch the Boombox drive or the real partition table.
+bool storeHostRead(uint32_t lba, uint8_t* buf) {
+  if (!layout.split || lba >= layout.total) return false;
+  if (lba >= layout.stStart && lba - layout.stStart < layout.stSize) return cardRead(lba, buf);
+  memset(buf, 0, 512);
+  if (lba == 0) {
+    memcpy(buf + 446, layout.storeEntry, 16);
+    buf[510] = 0x55;
+    buf[511] = 0xAA;
+  }
+  return true;
+}
+
+bool storeHostWrite(uint32_t lba, const uint8_t* buf) {
+  if (!layout.split || lba >= layout.total) return false;
+  if (lba >= layout.stStart && lba - layout.stStart < layout.stSize) return cardWrite(lba, buf);
+  return true;                                       // outside the library: accepted, not stored
 }
 
 static void clEntry(uint8_t* e, uint32_t start, uint32_t size) {
@@ -670,7 +694,7 @@ StoreFS STORE;
 // ==== STORE FS END ====
 
 // ---------------- Wi-Fi client helpers ----------------
-// Up to MAX_NETS networks are remembered in flash. In Wi-Fi mode the stick scans
+// Up to MAX_NETS networks are remembered in flash. In every mode the stick scans
 // now and then and joins the strongest remembered network that is in range.
 static int findNet(const String& ssid) {
   for (int i = 0; i < netCount; i++) {
@@ -749,7 +773,7 @@ bool deleteNet(const String& ssid) {
   return true;
 }
 
-// Called when Wi-Fi mode is entered: look for a remembered network soon.
+// Look for a remembered network soon.
 void staConnectSaved() {
   staScanActive = false;
   staJoining = false;
@@ -763,10 +787,10 @@ void staDisconnect() {
   WiFi.disconnect(false, false);   // keep the access point running
 }
 
-// Runs from loop(): in Wi-Fi mode, when not connected to a router, scan every
+// Runs from loop(), in every mode: when not connected to a router, scan every
 // so often and join the strongest remembered network that is visible.
 void staAutoJoinTick() {
-  if (usbMode || staPending || netCount == 0) return;
+  if (staPending || netCount == 0) return;
   if (WiFi.status() == WL_CONNECTED) { staJoining = false; staScanActive = false; return; }
 
   if (staJoining) {
@@ -813,37 +837,40 @@ void staAutoJoinTick() {
 
 // ---------------- USB MSC callbacks ----------------
 static int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
-  if (!usbMode) return -1;
+  if (hostView == HOST_NONE) return -1;
   xSemaphoreTake(sdLock, portMAX_DELAY);
-  bool ok = true;
+  HostView v = hostView;                      // may have changed while waiting
+  bool ok = v != HOST_NONE;
   uint8_t* p = (uint8_t*)buffer;
   for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
-    ok = hostRead(lba + i, p + i * 512);      // the car only sees its own part of the card
+    // the car only sees its own part of the card; a computer in edit mode only the library
+    ok = v == HOST_CAR ? hostRead(lba + i, p + i * 512) : storeHostRead(lba + i, p + i * 512);
   }
   xSemaphoreGive(sdLock);
   return ok ? (int32_t)bufsize : -1;
 }
 
 static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
-  if (!usbMode) return -1;
+  if (hostView == HOST_NONE) return -1;
   usbWriteCount = usbWriteCount + 1;   // only this callback writes it; loop() just reads
   xSemaphoreTake(sdLock, portMAX_DELAY);
-  bool ok = true;
+  HostView v = hostView;
+  bool ok = v != HOST_NONE;
   for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
-    ok = hostWrite(lba + i, buffer + i * 512);
+    ok = v == HOST_CAR ? hostWrite(lba + i, buffer + i * 512) : storeHostWrite(lba + i, buffer + i * 512);
   }
   xSemaphoreGive(sdLock);
   return ok ? (int32_t)bufsize : -1;
 }
 
 static bool onStartStop(uint8_t power_condition, bool start, bool load_eject) {
-  // Host pressed "Eject" -> hand the card to Wi-Fi mode (done in loop()).
+  // Host pressed "Eject" -> the stick takes that drive back (done in loop()).
   if (load_eject && !start) ejectRequested = true;
   return true;
 }
 
-// ---------------- Free space in USB mode ----------------
-// While the host owns the card we must not use FatFs, so we read the FAT
+// ---------------- Free space while a computer has the library ----------------
+// While the host owns the library we must not use FatFs on it, so we read its FAT
 // table directly (read-only) and count unused clusters. This runs in small
 // slices from loop(), only after the host has been idle for a few seconds.
 static uint32_t le16(const uint8_t* p) { return p[0] | (p[1] << 8); }
@@ -853,7 +880,7 @@ static uint32_t le32(const uint8_t* p) {
 
 static bool readSector(uint32_t lba, uint8_t* buf) {
   xSemaphoreTake(sdLock, portMAX_DELAY);
-  bool ok = usbMode && hostRead(lba, buf);
+  bool ok = hostView == HOST_STORE && cardRead(lba, buf);
   xSemaphoreGive(sdLock);
   return ok;
 }
@@ -870,27 +897,10 @@ void freeReset() {
 void freeScanBegin() {
   scanWriteMark = usbWriteCount;
   uint8_t b[512];
-  uint32_t part = 0;
+  uint32_t part = layout.stStart;
 
-  if (!readSector(0, b)) { lastWriteMs = millis(); return; }   // retry in a few seconds
-  if (memcmp(b + 3, "EXFAT   ", 8) == 0) { freeState = 2; return; }
-
-  if (!looksLikeBootSector(b)) {
-    // Probably an MBR: find the first FAT partition.
-    bool found = false;
-    for (int i = 0; i < 4; i++) {
-      const uint8_t* e = b + 446 + 16 * i;
-      uint8_t t = e[4];
-      if (t == 0x04 || t == 0x06 || t == 0x0B || t == 0x0C || t == 0x0E) {
-        part = le32(e + 8);
-        found = true;
-        break;
-      }
-    }
-    if (!found || part >= layout.hostSectors) { freeState = 2; return; }
-    if (!readSector(part, b)) { lastWriteMs = millis(); return; }
-    if (!looksLikeBootSector(b)) { freeState = 2; return; }
-  }
+  if (!readSector(part, b)) { lastWriteMs = millis(); return; }   // retry in a few seconds
+  if (!looksLikeBootSector(b)) { freeState = 2; return; }         // e.g. reformatted as exFAT
 
   uint32_t spc = b[13], reserved = le16(b + 14), nfats = b[16], rootEnt = le16(b + 17);
   uint32_t tot = le16(b + 19);
@@ -943,7 +953,7 @@ void freeScanStep() {
 }
 
 void freeScanTick() {
-  if (!usbMode || sectorCount == 0) return;
+  if (hostView != HOST_STORE) return;
   if (usbWriteCount != lastCountSeen) {
     lastCountSeen = usbWriteCount;
     lastWriteMs = millis();
@@ -1113,42 +1123,45 @@ void displayUpdate() {
 
   // 160 x 80 layout:
   //   [ Tesla WiFi USB Stick   v0.8 ]   header bar: orange while the car (USB host)
-  //     42% used            of 4GB       is using the drive, cyan in Wi-Fi mode
-  //   [#########.................. ]   how full the car's drive is
+  //     42% used           of 55GB       is using the drive, cyan in edit mode
+  //   [#########.................. ]   how full the sound library is
   //     CAR HAS DRIVE     STICK WIFI     mode, and which network the address is on
   //            192.168.4.1
   uint32_t titleColor = usbMode ? C_ORANGE : C_CYAN;
 
-  // How full the car's drive is. In USB mode the stick counts free clusters itself
-  // (the car owns the file system); in Wi-Fi mode it asks the file system (cached).
+  // How full the sound library is. Normally the stick asks its file system
+  // (cached); while a computer has the library it counts free clusters itself.
   String usage, sizeText;
   int pct = -1;                                      // -1: no figure, show the text in `usage`
-  static uint64_t wifiTotal = 0, wifiUsed = 0;
-  static uint32_t wifiAt = 0;
+  static uint64_t libTotal = 0, libUsed = 0;
+  static uint32_t libAt = 0;
   uint64_t total = 0, used = 0;
   bool known = false;
   if (cardProblem.length()) {
     usage = cardProblem;
   } else if (sectorCount == 0) {
     usage = "No SD card";
-  } else if (usbMode) {
+  } else if (hostView == HOST_STORE) {
+    libAt = 0;
     if (freeState == 1 && fsTotalBytes > 0) {
       total = fsTotalBytes;
       used = fsTotalBytes - freeBytes;
       known = true;
     } else {
-      usage = freeState == 2 ? "Drive: FAT32 only" : "Checking space...";
+      usage = freeState == 2 ? "Library: not FAT32" : "Checking space...";
     }
-  } else {
-    if (wifiAt == 0 || millis() - wifiAt > 10000) {
-      wifiTotal = SD_MMC.totalBytes();
-      wifiUsed = SD_MMC.usedBytes();
-      wifiAt = millis() | 1;
+  } else if (storeMounted) {
+    if (libAt == 0 || millis() - libAt > 5000) {
+      uint64_t t = 0, f = 0;
+      if (STORE.space(t, f)) { libTotal = t; libUsed = t - f; }
+      libAt = millis() | 1;
     }
-    total = wifiTotal;
-    used = wifiUsed;
+    total = libTotal;
+    used = libUsed;
     known = total > 0;
     if (!known) usage = "Checking space...";
+  } else {
+    usage = "Library unavailable";
   }
   if (known) {
     pct = (int)((used * 100 + total / 2) / total);
@@ -1181,7 +1194,7 @@ void displayUpdate() {
   text("Tesla WiFi USB Stick", 4, 4);
   right("v" FW_VERSION, 4);
 
-  // Car drive: figure, size and a bar; or one line saying what is wrong
+  // Sound library: figure, size and a bar; or one line saying what is wrong
   lcdPtr->setFont(&fonts::Font2);                  // 16 px tall
   lcdPtr->setTextColor(C_WHITE, C_BLACK);
   if (pct >= 0) {
@@ -1212,26 +1225,81 @@ void displayUpdate() {
   lcdPtr->setFont(&fonts::Font0);                  // the pop-up messages use the basic font
 }
 
+// A full-screen notice in large type (First Run, card setup): a header bar, a
+// line, one big figure and a footer. Stays up for `ms`, like a pop-up message.
+void showBig(const char* header, const String& line, const String& big, const String& foot, uint32_t color, uint32_t ms) {
+  toastUntil = millis() + ms;
+  if (!lcdPtr) return;
+  const int W = lcdPtr->width();
+  auto centre = [&](const String& t, int y) {
+    lcdPtr->setCursor((W - lcdPtr->textWidth(t.c_str())) / 2, y);
+    lcdPtr->print(t.c_str());
+  };
+  lcdPtr->fillScreen(C_BLACK);
+  lcdPtr->setTextSize(1);
+  lcdPtr->fillRect(0, 0, W, 18, color);
+  lcdPtr->setFont(&fonts::Font2);                  // 16 px tall
+  lcdPtr->setTextColor(C_BLACK, color);
+  centre(header, 1);
+  lcdPtr->setTextColor(C_WHITE, C_BLACK);
+  centre(line, 20);
+  lcdPtr->setFont(&fonts::Font4);                  // 26 px tall
+  lcdPtr->setTextColor(color, C_BLACK);
+  centre(big, 37);
+  lcdPtr->setFont(&fonts::Font2);
+  lcdPtr->setTextColor(C_GREY, C_BLACK);
+  centre(foot, 63);
+  lcdPtr->setFont(&fonts::Font0);                  // the pop-up messages use the basic font
+}
+
 void formatProgress(int percent) {
   static int last = -1;
   if (percent == last) return;
   last = percent;
   fmtPercent = percent;
-  showToast("Card setup", String(percent) + "% done. Do not unplug the stick.", 600000, true);
+  showBig(firstRun ? "First Run" : "Card setup", "Formatting card", String(percent) + "%", "Do not unplug", C_ORANGE, 600000);
 }
 
 // ---------------- Mode switching ----------------
+// The sound library can be lent to a computer on the USB port as a drive (edit
+// mode only). While it is, the stick keeps its hands off it: STORE is unmounted.
+void takeStoreBack() {
+  if (hostView != HOST_STORE) return;
+  msc.mediaPresent(false);        // the computer sees the drive removed
+  delay(600);                     // give it time to notice
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  hostView = HOST_NONE;
+  xSemaphoreGive(sdLock);
+  STORE.begin();                  // mounted fresh, so the computer's changes are seen
+}
+
+void giveStoreToHost() {
+  if (usbMode || !storeMounted) return;
+  if (uploadFile) uploadFile.close();
+  STORE.end();
+  freeReset();                    // count the library's free space again
+  msc.begin(layout.total, 512);   // the drive's size as the computer sees it
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  hostView = HOST_STORE;
+  xSemaphoreGive(sdLock);
+  msc.mediaPresent(true);
+}
+
+// USB mode: the car has the Boombox drive and the stick has the library.
+// Edit mode: the stick has the Boombox drive (the host sees nothing, until the
+// library is lent to it with giveStoreToHost()).
 void setUsbMode(bool on) {
+  if (on) takeStoreBack();
   if (on == usbMode) return;
   if (on) {
     if (uploadFile) uploadFile.close();
-    freeReset();                  // card may have changed in Wi-Fi mode: recount
-    staDisconnect();              // router link is only used in Wi-Fi mode
     xSemaphoreTake(sdLock, portMAX_DELAY);
     SD_MMC.end();                 // flush and drop cached FAT state
     mountSD();
     if (sectorCount > 0) setVolumeLabelRaw(cfgLabel.c_str());   // name the drive
+    msc.begin(layout.hostSectors, 512);
     usbMode = true;
+    hostView = HOST_CAR;
     xSemaphoreGive(sdLock);
     msc.mediaPresent(true);       // host sees the drive (re)appear
   } else {
@@ -1239,10 +1307,10 @@ void setUsbMode(bool on) {
     delay(600);                   // give the host time to notice
     xSemaphoreTake(sdLock, portMAX_DELAY);
     usbMode = false;
+    hostView = HOST_NONE;
     SD_MMC.end();                 // remount fresh so we see the host's changes
     mountSD();
     xSemaphoreGive(sdLock);
-    staConnectSaved();            // join the saved router, if any
   }
 }
 
@@ -1269,7 +1337,7 @@ String safePath(String p) {
 
 bool requireWifiMode() {
   if (usbMode) {
-    server.send(423, "text/plain", "Drive is in USB mode. Switch to Wi-Fi mode first.");
+    server.send(423, "text/plain", "The car has this drive. Switch to edit mode first.");
     return false;
   }
   return true;
@@ -1282,7 +1350,9 @@ fs::FS& volFS() { return isStoreVol() ? (fs::FS&)STORE : (fs::FS&)SD_MMC; }
 bool requireVol() {
   if (isStoreVol()) {
     if (storeMounted) return true;
-    server.send(409, "text/plain", "The sound library is not available (no usable SD card).");
+    server.send(409, "text/plain", hostView == HOST_STORE
+      ? "The computer on the USB port is using the sound library. Take it back first."
+      : "The sound library is not available (no usable SD card).");
     return false;
   }
   return requireWifiMode();
@@ -1301,7 +1371,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  table{width:100%;border-collapse:collapse}
  td{padding:6px 4px;border-bottom:1px solid #ddd;word-break:break-all}
  td.s{white-space:nowrap;color:#666;font-size:13px}
- td.a{text-align:right}
+ td.a{text-align:right;white-space:nowrap}
  a{color:#06c;text-decoration:none;cursor:pointer}
  #path{font-family:monospace;margin:8px 0}
  #msg{color:#b00;min-height:1.2em}
@@ -1318,6 +1388,13 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tabs button{flex:1;padding:8px;border:1px solid #bbb;background:#f4f4f4;border-radius:6px;font-weight:600}
  #tabs button.on{background:#06c;color:#fff;border-color:#06c}
  #volinfo{font-size:13px;color:#555;margin:4px 0}
+ button.ib{padding:4px 5px;margin:1px;line-height:0;vertical-align:middle}
+ svg.ic{width:18px;height:18px;fill:currentColor}
+ #legend{font-size:12px;color:#666;margin-top:10px}
+ #legend span{white-space:nowrap;margin-right:10px;display:inline-block}
+ #legend svg.ic{width:14px;height:14px;vertical-align:-2px}
+ #up{display:none}
+ .chk{display:block;font-size:14px;margin:2px 0}
 </style></head><body>
 <h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small></h2>
 <div id="bar"><span id="mode"></span><br><button id="toggle"></button></div>
@@ -1328,7 +1405,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <select id="nets"><option value="">(scan to list networks)</option></select>
  <input type="text" id="ssid" placeholder="Network name (type it here if not listed)" maxlength="32" autocapitalize="off" autocomplete="off">
  <input type="password" id="pass" placeholder="Password (blank if open)" maxlength="63" autocomplete="off">
- <label><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
+ <label class="chk"><input type="checkbox" id="showpw"> Show password</label>
+ <label class="chk"><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
  <div><button id="wconn">Connect</button></div>
 </details>
 <details id="card"><summary>Car drive tools</summary>
@@ -1364,15 +1442,28 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 </details>
 <div id="tabs"><button id="tlib">Sound library</button><button id="tcar">Car drive</button></div>
 <div id="volinfo"></div>
+<button id="take" style="display:none">Use the library here instead (eject it on the computer first)</button>
 <div id="tools">
  <input type="file" id="up" multiple>
- <button id="mk">New folder</button>
+ <button id="upb" class="ib"></button>
+ <button id="mk" class="ib"></button>
 </div>
 <div id="path"></div>
 <div id="msg"></div>
 <table id="files"></table>
+<div id="legend"></div>
 <script>
-let dir='/',usb=false,vol='car',hasStore=false,dirs={store:'/',car:'/'};
+let dir='/',usb=false,pcLib=false,vol='car',hasStore=false,dirs={store:'/',car:'/'};
+const IC={
+ play:'M8 5v14l11-7z',stop:'M6 6h12v12H6z',
+ chime:'M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5a6 6 0 0 0-4.5-5.8V4.5a1.5 1.5 0 0 0-3 0v.7A6 6 0 0 0 6 11v5l-2 2v1h16v-1z',
+ rename:'M3 17.25V21h3.75L17.8 9.94l-3.75-3.75zM20.7 7a1 1 0 0 0 0-1.4l-2.3-2.3a1 1 0 0 0-1.4 0l-1.8 1.8 3.75 3.75z',
+ del:'M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z',
+ upload:'M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z',
+ folder:'M20 6h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3z'};
+const svg=k=>'<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="'+IC[k]+'"/></svg>';
+function setIcon(b,k,label){b.className='ib';b.innerHTML=svg(k);b.title=label;b.setAttribute('aria-label',label)}
+function ibtn(k,label,fn){const b=document.createElement('button');setIcon(b,k,label);b.onclick=fn;return b}
 const V=()=>'&vol='+vol;
 const $=s=>document.querySelector(s);
 const enc=encodeURIComponent;
@@ -1380,28 +1471,32 @@ const join=(d,n)=>(d==='/'?'':d)+'/'+n;
 const msg=t=>{$('#msg').textContent=t||''};
 async function api(u,o){const r=await fetch(u,o);if(!r.ok)throw new Error(await r.text());return r}
 function fmt(n){return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':n<1073741824?(n/1048576).toFixed(1)+' MB':(n/1073741824).toFixed(1)+' GB'}
-function btn(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;return b}
 
 async function load(){
  stopPlay();
  msg();
  wstatus();
  const st=await (await fetch('/api/status')).json();
- usb=!!st.usb;
- if(!!st.store!==hasStore){hasStore=!!st.store;vol=hasStore?'store':'car';dir=dirs[vol]}
+ const wasPc=pcLib;
+ usb=!!st.usb;pcLib=!!st.pcLib;
+ if(pcLib&&!wasPc&&vol==='store'){vol='car';dir=dirs.car}
+ const hs=!!st.store||pcLib;
+ if(hs!==hasStore){hasStore=hs;vol=hasStore&&!pcLib?'store':'car';dir=dirs[vol]}
  $('#bar').className=usb?'usb':'';
  $('#mode').textContent=st.problem?'Card problem: '+st.problem+'.':usb
-  ?'USB mode: the car (host) is using its drive.'+(hasStore?' You can still edit the sound library.':' Editing is disabled.')
-  :'Wi-Fi mode: the car sees its drive as ejected. '+(st.total?'Car drive: '+fmt(st.used)+' used of '+fmt(st.total):'');
+  ?'Car mode: the car is using its drive.'+(hasStore?' You can still edit the sound library.':' Editing is disabled.')
+  :'Edit mode: the car drive is with the stick. '+(pcLib?'A computer on the USB port sees the sound library as a drive.':'Nothing is shown on the USB port.');
  if(st.ver)$('#ver').textContent='v'+st.ver;
- $('#toggle').textContent=usb?'Switch to Wi-Fi mode (edit the car drive)':'Give drive back to USB host';
+ $('#toggle').textContent=usb?'Switch to edit mode (edit the car drive here, library on the computer)':'Give the car its drive back';
  $('#tabs').style.display=hasStore?'':'none';
  $('#tlib').className=vol==='store'?'on':'';
  $('#tcar').className=vol==='car'?'on':'';
- const editable=vol==='store'||!usb;
+ const editable=vol==='store'?!pcLib:!usb;
+ $('#take').style.display=vol==='store'&&pcLib?'':'none';
  $('#volinfo').textContent=!hasStore?'':vol==='store'
-  ?'Your sounds, on the stick\'s own storage. The car never sees these files.'+(st.stTotal?' '+fmt(st.stFree*1024)+' free of '+fmt(st.stTotal*1024)+'.':'')
-  :(usb?'The car is using this drive. Switch to Wi-Fi mode to see or edit it.':'What the car sees. Make Lock Chime writes LockChime.wav here.');
+  ?(pcLib?'The computer on the USB port is using the sound library as a drive, so it can\'t be edited here at the same time.'
+   :'Your sounds, on the stick\'s own storage. The car never sees these files.'+(st.stTotal?' '+fmt(st.stFree*1024)+' free of '+fmt(st.stTotal*1024)+'.':''))
+  :(usb?'The car is using this drive. Switch to edit mode to see or edit it.':'What the car sees. Make Lock Chime writes LockChime.wav here.'+(st.total?' '+fmt(st.used)+' used of '+fmt(st.total)+'.':''));
  $('#tools').style.display=editable?'':'none';
  $('#path').textContent=editable?(hasStore?(vol==='store'?'Library':'Car drive')+': ':'')+dir:'';
  const t=$('#files');t.innerHTML='';
@@ -1426,7 +1521,7 @@ async function load(){
   if(!f.d&&/\.wav$/i.test(f.n)){
    x.appendChild(playBtn(join(dir,f.n)));
    if(vol==='store'||!(dir==='/'&&f.n.toLowerCase()==='lockchime.wav'))
-   x.appendChild(btn('Make Lock Chime',async()=>{
+   x.appendChild(ibtn('chime','Make Lock Chime',async()=>{
     let m='Copy '+f.n+' to LockChime.wav on the car drive?\n(An existing LockChime.wav will be replaced.'+(usb?' The car will see its drive eject and come back for a moment.':'')+')';
     try{
      const i=await (await api('/api/wavinfo?path='+enc(join(dir,f.n))+V())).json();
@@ -1438,12 +1533,12 @@ async function load(){
     try{await api('/lockchime?path='+enc(join(dir,f.n))+V(),{method:'POST'});msg();alert('LockChime.wav is now '+f.n+'.');load()}catch(e){msg(e.message)}
    }));
   }
-  x.appendChild(btn('Rename',async()=>{
+  x.appendChild(ibtn('rename','Rename',async()=>{
    const n=prompt('New name',f.n);
    if(!n||n===f.n)return;
    try{await api('/rename?from='+enc(join(dir,f.n))+'&to='+enc(join(dir,n))+V(),{method:'POST'});load()}catch(e){msg(e.message)}
   }));
-  x.appendChild(btn('Delete',async()=>{
+  x.appendChild(ibtn('del','Delete',async()=>{
    if(!confirm('Delete '+f.n+'?'))return;
    try{await api('/delete?path='+enc(join(dir,f.n))+V(),{method:'POST'});load()}catch(e){msg(e.message)}
   }));
@@ -1457,6 +1552,16 @@ $('#toggle').onclick=async()=>{
  try{await api('/mode?usb='+(usb?0:1),{method:'POST'})}catch(e){msg(e.message)}
  load();
 };
+$('#take').onclick=async()=>{
+ msg('Taking the library back...');
+ try{await api('/store/take',{method:'POST'})}catch(e){msg(e.message)}
+ load();
+};
+setIcon($('#upb'),'upload','Upload files');
+setIcon($('#mk'),'folder','New folder');
+$('#upb').onclick=()=>$('#up').click();
+$('#showpw').onchange=e=>{$('#pass').type=e.target.checked?'text':'password'};
+$('#legend').innerHTML=[['upload','upload'],['folder','new folder'],['play','play'],['chime','make lock chime'],['rename','rename'],['del','delete']].map(a=>'<span>'+svg(a[0])+' '+a[1]+'</span>').join('');
 $('#mk').onclick=async()=>{
  const n=prompt('Folder name');if(!n)return;
  try{await api('/mkdir?path='+enc(join(dir,n))+V(),{method:'POST'});load()}catch(e){msg(e.message)}
@@ -1534,7 +1639,7 @@ async function wsaved(){
    const t=document.createElement('span');
    t.textContent=n.s+(n.c?' (connected)':'')+(n.h?' (hidden)':'');
    row.appendChild(t);
-   row.appendChild(btn('Delete',async()=>{
+   row.appendChild(ibtn('del','Delete this saved network',async()=>{
     if(!confirm('Delete the saved network "'+n.s+'"?'))return;
     try{await api('/wifi/delete',{method:'POST',body:new URLSearchParams({ssid:n.s})})}catch(e){$('#wst').textContent=e.message}
     wsaved();wstatus();
@@ -1547,14 +1652,14 @@ async function wsaved(){
 let player=null,playBtnEl=null;
 function stopPlay(){
  if(player){player.pause();player=null}
- if(playBtnEl){playBtnEl.textContent='Play';playBtnEl=null}
+ if(playBtnEl){setIcon(playBtnEl,'play','Play');playBtnEl=null}
 }
 function playBtn(path){
- const b=btn('Play',()=>{
+ const b=ibtn('play','Play',()=>{
   if(playBtnEl===b){stopPlay();return}
   stopPlay();
   player=new Audio('/play?path='+enc(path)+V());
-  playBtnEl=b;b.textContent='Stop';
+  playBtnEl=b;setIcon(b,'stop','Stop');
   player.onended=stopPlay;
   player.onerror=()=>{stopPlay();msg('Could not play this file. Is it a valid WAV?')};
   player.play().catch(()=>{stopPlay()});
@@ -1588,6 +1693,7 @@ void handleStatus() {
   out += ",\"ver\":\"" FW_VERSION "\"";
   if (cardProblem.length()) out += ",\"problem\":\"" + jsonEscape(cardProblem) + "\"";
   out += ",\"store\":" + String(storeMounted ? 1 : 0);
+  out += ",\"pcLib\":" + String(hostView == HOST_STORE ? 1 : 0);   // a computer has the library
   uint64_t stTotal = 0, stFree = 0;
   if (STORE.space(stTotal, stFree)) {
     out += ",\"stTotal\":" + String((unsigned long)(stTotal / 1024));   // KB, fits in 32 bits
@@ -1600,10 +1706,11 @@ void handleStatus() {
 // ---------------- First Run ----------------
 // Every card must have the two-partition layout (see CARD LAYOUT). A card that
 // doesn't (new, exFAT, used somewhere else) is erased and set up automatically:
-// a short countdown (unplug the stick to cancel), then the format, then a
-// restart. Until then the car is not given a drive, and the web server only
+// with a screen, a countdown (unplug the stick to cancel); without one, the stick
+// waits until the BOOT button is held down. Then the format, then a restart. Until then the car is not given a drive, and the web server only
 // serves a small progress page, so nothing else can touch the card.
-#define FIRST_RUN_WAIT_MS 10000
+#define FIRST_RUN_WAIT_MS 15000         // with a screen: countdown before erasing
+#define FIRST_RUN_HOLD_MS 5000          // without a screen: hold the BOOT button this long
 const char FIRSTRUN_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1619,7 +1726,8 @@ const char FIRSTRUN_HTML[] PROGMEM = R"HTML(<!doctype html>
 <div id="box"><b>First Run: setting up the SD card</b>
  <div id="txt">Checking...</div>
  <div id="bar"><div id="fill"></div></div>
- <div class="sm">The card is erased and split into a 4 GB "Boombox" drive for the car and a "CHIME_STORE" sound library for the stick. Do not unplug the stick once this has started. It restarts when done; this page then reloads by itself (rejoin the stick's Wi-Fi if your phone dropped it).</div>
+ <div class="sm">The card is erased and split into a 4 GB "Boombox" drive for the car and a "CHIME_STORE" sound library for the stick. Do not unplug the stick once this has started. Formatting takes a few minutes. The stick restarts when done; this page then reloads by itself (rejoin the stick's Wi-Fi if your phone dropped it).</div>
+ <div class="sm" id="noscr" style="display:none;margin-top:8px"><b>No screen on your stick?</b> It will not start by itself. Hold the button on the stick down for more than 5 seconds, then let go. When it is plugged into a computer, wait until the stick shows up as a USB drive on the computer before you unplug it: that is the sign that setup has finished.</div>
 </div>
 <script>
 const $=s=>document.querySelector(s);
@@ -1629,7 +1737,9 @@ async function tick(){
   if(!st.firstRun){location.reload();return}
   if(st.ver)$('#ver').textContent='v'+st.ver;
   $('#fill').style.width=st.pct+'%';
+  $('#noscr').style.display=st.hold?'':'none';
   $('#txt').textContent=st.err?'Card setup failed: '+st.err+'. Unplug the stick, check or replace the card, and plug it in again.'
+   :st.hold?'This card ('+(st.cardMB/1024).toFixed(1)+' GB) is not set up yet. Hold the button on the stick for more than 5 seconds to erase it and set it up.'
    :st.wait?'This card ('+(st.cardMB/1024).toFixed(1)+' GB) is not set up yet. Erasing it in '+st.wait+' s. Unplug the stick now to keep what is on the card.'
    :'Formatting: '+st.pct+'% done.';
  }catch(e){$('#txt').textContent='Waiting for the stick...'}
@@ -1643,6 +1753,7 @@ uint32_t firstRunAt = 0;               // when the countdown started
 bool firstRunDone = false;             // the format was attempted (and failed, or the stick would have restarted)
 
 static uint32_t firstRunWait() {       // seconds left on the countdown
+  if (!cfgDisplay) return 0;           // no screen: started with the button instead
   uint32_t el = millis() - firstRunAt;
   return (firstRunDone || el >= FIRST_RUN_WAIT_MS) ? 0 : (FIRST_RUN_WAIT_MS - el + 999) / 1000;
 }
@@ -1655,6 +1766,7 @@ void handleFirstRunStatus() {
   String out = "{\"firstRun\":1,\"ver\":\"" FW_VERSION "\"";
   out += ",\"cardMB\":" + String((unsigned long)(layout.total / 2048));
   out += ",\"wait\":" + String((unsigned long)firstRunWait());
+  out += ",\"hold\":" + String((!cfgDisplay && !firstRunDone) ? 1 : 0);   // waiting for the button
   out += ",\"pct\":" + String(fmtPercent);
   out += ",\"err\":\"" + jsonEscape(firstRunErr) + "\"}";
   server.send(200, "application/json", out);
@@ -1663,14 +1775,22 @@ void handleFirstRunStatus() {
 // Called from loop() while firstRun is set.
 void firstRunTick() {
   if (firstRunDone) return;
-  uint32_t wait = firstRunWait();
-  if (wait > 0) {
-    static uint32_t shown = 0;
-    if (wait != shown) {
-      shown = wait;
-      showToast("First Run", "New card: erasing it in " + String((unsigned long)wait) + " s. Unplug to cancel.", 5000, false);
+  if (!cfgDisplay) {
+    // Nobody can see a countdown, so nothing is erased until the button is held.
+    static uint32_t downSince = 0;
+    if (digitalRead(BUTTON_PIN) != LOW) { downSince = 0; return; }
+    if (downSince == 0) downSince = millis() | 1;
+    if (millis() - downSince <= FIRST_RUN_HOLD_MS) return;
+  } else {
+    uint32_t wait = firstRunWait();
+    if (wait > 0) {
+      static uint32_t shown = 0;
+      if (wait != shown) {
+        shown = wait;
+        showBig("First Run", "Erasing card in", String((unsigned long)wait) + " s", "Unplug to cancel", C_ORANGE, 5000);
+      }
+      return;
     }
-    return;
   }
   firstRunDone = true;
   xSemaphoreTake(sdLock, portMAX_DELAY);
@@ -1684,7 +1804,7 @@ void firstRunTick() {
     showToast("Setup failed", err, 15000, false);
     return;
   }
-  showToast("Card ready", "Restarting...", 3000, true);
+  showBig("First Run", "Card is ready", "OK", "Restarting...", C_GREEN, 5000);
   uint32_t t = millis();
   while (millis() - t < 2500) { server.handleClient(); delay(5); }   // let the page see 100%
   ESP.restart();                       // start fresh with the new layout
@@ -1704,6 +1824,7 @@ void handleCardRebuild() {
 void doCardRebuild() {
   rebuildRequested = false;
   if (uploadFile) uploadFile.close();
+  takeStoreBack();                     // the chime copy is in the library
   if (usbMode) setUsbMode(false);      // the car sees its drive eject
   xSemaphoreTake(sdLock, portMAX_DELAY);
   formatting = true;
@@ -2038,7 +2159,7 @@ void handleWifiNetworks() {
 }
 
 void handleWifiStatus() {
-  bool conn = (WiFi.status() == WL_CONNECTED) && !usbMode;
+  bool conn = (WiFi.status() == WL_CONNECTED);
   String out = "{\"connected\":" + String(conn ? 1 : 0);
   if (conn) {
     out += ",\"ssid\":\"" + jsonEscape(WiFi.SSID()) + "\"";
@@ -2053,7 +2174,7 @@ void handleWifiStatus() {
 
 // The remembered networks (names only - passwords are never sent to the browser).
 void handleWifiSaved() {
-  bool conn = (WiFi.status() == WL_CONNECTED) && !usbMode;
+  bool conn = (WiFi.status() == WL_CONNECTED);
   String cur = conn ? WiFi.SSID() : String("");
   String out = "{\"list\":[";
   for (int i = 0; i < netCount; i++) {
@@ -2099,13 +2220,6 @@ void handleWifiConnect() {
     }
   }
 
-  // In USB mode just remember it; it is joined when Wi-Fi mode is selected.
-  if (usbMode) {
-    addOrUpdateNet(ssid, pass, hidden);
-    server.send(200, "text/plain", "Saved. The stick will connect when you switch to Wi-Fi mode.");
-    return;
-  }
-
   // Connect in the background. Note: joining a router can move the stick's own
   // access point to the router's channel, so your phone may briefly drop and
   // rejoin the stick's Wi-Fi. The network is only remembered once it connects.
@@ -2122,7 +2236,7 @@ void handleWifiConnect() {
 
 void handleWifiDelete() {
   String ssid = server.arg("ssid");
-  bool wasCurrent = !usbMode && WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid;
+  bool wasCurrent = WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid;
   if (!deleteNet(ssid)) {
     server.send(404, "text/plain", "That network is not in the saved list.");
     return;
@@ -2135,7 +2249,14 @@ void handleWifiDelete() {
 }
 
 void handleMode() {
-  setUsbMode(server.arg("usb") == "1");
+  bool on = server.arg("usb") == "1";
+  setUsbMode(on);
+  if (!on) giveStoreToHost();          // edit mode: a computer on the USB port gets the library
+  server.send(200, "text/plain", "OK");
+}
+
+void handleStoreTake() {               // edit the library from the web page again
+  takeStoreBack();
   server.send(200, "text/plain", "OK");
 }
 
@@ -2175,6 +2296,10 @@ static void pickRandomWav(fs::FS& vfs, const String& dirPath, int depth, const S
 }
 
 void randomLockChime() {
+  if (hostView == HOST_STORE) {
+    showToast("Lock Chime", "The computer is using the sound library", 3000, false);
+    return;
+  }
   bool wasUsb = usbMode;
   showToast("Lock Chime", "Picking a file...", 10000);
   // With a split card the sounds come from the library, which is always available.
@@ -2352,6 +2477,7 @@ void setup() {
   server.on("/mkdir", HTTP_POST, handleMkdir);
   server.on("/lockchime", HTTP_POST, handleLockChime);
   server.on("/mode", HTTP_POST, handleMode);
+  server.on("/store/take", HTTP_POST, handleStoreTake);
   server.on("/wifi/scan", HTTP_POST, handleWifiScan);
   server.on("/api/wifi/networks", HTTP_GET, handleWifiNetworks);
   server.on("/api/wifi/status", HTTP_GET, handleWifiStatus);
@@ -2377,13 +2503,14 @@ void loop() {
 
   if (rebuildRequested) doCardRebuild();
 
-  // Host ejected the drive -> switch to Wi-Fi edit mode
+  // The host ejected its drive: the stick takes it back (the car's drive -> edit mode)
   if (ejectRequested) {
     ejectRequested = false;
-    if (usbMode) setUsbMode(false);
+    if (hostView == HOST_STORE) takeStoreBack();
+    else if (usbMode) setUsbMode(false);
   }
 
-  freeScanTick();      // USB mode: count free clusters in small slices
+  freeScanTick();      // library with a computer: count free clusters in small slices
   displayUpdate();     // redraws only when something changed
 
   // Finish a router connection attempt started from the web page
@@ -2396,10 +2523,10 @@ void loop() {
       staPending = false;
       staResult = "failed";
       WiFi.disconnect(false, false);
-      if (!usbMode) staConnectSaved();           // go back to the remembered networks
+      staConnectSaved();                         // go back to the remembered networks
     }
   }
-  staAutoJoinTick();   // Wi-Fi mode: look for and join a remembered network
+  staAutoJoinTick();   // look for and join a remembered network
 
   // BOOT button: make a random .wav the lock chime
   static uint32_t lastPress = 0;

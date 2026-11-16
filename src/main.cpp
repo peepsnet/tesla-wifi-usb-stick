@@ -327,6 +327,37 @@ void staAutoJoinTick() {
   }
 }
 
+// ---------------- USB MSC callbacks ----------------
+static int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
+  if (!usbMode) return -1;
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  bool ok = true;
+  uint8_t* p = (uint8_t*)buffer;
+  for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
+    ok = SD_MMC.readRAW(p + i * 512, lba + i);
+  }
+  xSemaphoreGive(sdLock);
+  return ok ? (int32_t)bufsize : -1;
+}
+
+static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize) {
+  if (!usbMode) return -1;
+  usbWriteCount = usbWriteCount + 1;   // only this callback writes it; loop() just reads
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  bool ok = true;
+  for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
+    ok = SD_MMC.writeRAW(buffer + i * 512, lba + i);
+  }
+  xSemaphoreGive(sdLock);
+  return ok ? (int32_t)bufsize : -1;
+}
+
+static bool onStartStop(uint8_t power_condition, bool start, bool load_eject) {
+  // Host pressed "Eject" -> hand the card to Wi-Fi mode (done in loop()).
+  if (load_eject && !start) ejectRequested = true;
+  return true;
+}
+
 // ---------------- Free space in USB mode ----------------
 // While the host owns the card we must not use FatFs, so we read the FAT
 // table directly (read-only) and count unused clusters. This runs in small

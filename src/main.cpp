@@ -985,14 +985,6 @@ void showToast(const String& title, const String& line, uint32_t ms, bool ok = t
   drawToast();
 }
 
-static String fmtBytes(uint64_t b) {
-  char buf[20];
-  if (b >= 1073741824ULL) snprintf(buf, sizeof(buf), "%.1f GB", b / 1073741824.0);
-  else if (b >= 1048576ULL) snprintf(buf, sizeof(buf), "%.0f MB", b / 1048576.0);
-  else snprintf(buf, sizeof(buf), "%.0f KB", b / 1024.0);
-  return String(buf);
-}
-
 void displayInit() {
   if (!cfgDisplay) return;
   lcdPtr = new LGFX(cfgOffX, cfgOffY, cfgInvert, cfgRgb);
@@ -1020,69 +1012,78 @@ void displayUpdate() {
   if (millis() < toastUntil) return;                 // a pop-up message is showing
   if (toastUntil != 0) { toastUntil = 0; lastScreenKey = ""; }   // it expired: redraw normal screen
 
-  String title, label, value, extra;
-  uint32_t titleColor;
-  bool bigIp = false;                    // client mode: show the IP as large as possible
+  // Three lines:   Tesla WiFi USB Stick V0.7
+  //                 42% of 4GB Used
+  //                 IP: 192.168.4.1
+  // The title is orange while the car (USB host) is using the drive, cyan in Wi-Fi mode.
+  String title = "Tesla WiFi USB Stick V" FW_VERSION;
+  uint32_t titleColor = usbMode ? C_ORANGE : C_CYAN;
 
-  if (usbMode) {
-    title = "USB Drive";
-    titleColor = C_ORANGE;
-    label = "Free space";
-    if (sectorCount == 0) { value = "No SD card"; }
-    else if (freeState == 1) { value = fmtBytes(freeBytes); extra = "of " + fmtBytes(fsTotalBytes); }
-    else if (freeState == 2) { value = "n/a"; extra = "FAT16/32 only"; }
-    else { value = "..."; extra = "calculating"; }
-  } else if (WiFi.status() == WL_CONNECTED) {
-    title = "Wi-Fi Client";
-    titleColor = C_GREEN;
-    value = WiFi.localIP().toString();
-    bigIp = true;
+  // How full the car's drive is. In USB mode the stick counts free clusters itself
+  // (the car owns the file system); in Wi-Fi mode it asks the file system (cached).
+  String usage;
+  static uint64_t wifiTotal = 0, wifiUsed = 0;
+  static uint32_t wifiAt = 0;
+  uint64_t total = 0, used = 0;
+  bool known = false;
+  if (sectorCount == 0) {
+    usage = "No SD card";
+  } else if (usbMode) {
+    if (freeState == 1 && fsTotalBytes > 0) {
+      total = fsTotalBytes;
+      used = fsTotalBytes - freeBytes;
+      known = true;
+    } else {
+      usage = freeState == 2 ? "Drive: FAT32 only" : "Checking space...";
+    }
   } else {
-    title = "Wi-Fi AP";
-    titleColor = C_CYAN;
-    label = "IP address";
-    value = WiFi.softAPIP().toString();
-    extra = "Clients: " + String(WiFi.softAPgetStationNum());
+    if (wifiAt == 0 || millis() - wifiAt > 10000) {
+      wifiTotal = SD_MMC.totalBytes();
+      wifiUsed = SD_MMC.usedBytes();
+      wifiAt = millis() | 1;
+    }
+    total = wifiTotal;
+    used = wifiUsed;
+    known = total > 0;
+    if (!known) usage = "Checking space...";
+  }
+  if (known) {
+    int pct = (int)((used * 100 + total / 2) / total);
+    if (pct > 100) pct = 100;
+    double gib = total / 1073741824.0;
+    String size = gib >= 1.0 ? String((int)(gib + 0.5)) + "GB" : String((int)(total / 1048576)) + "MB";
+    usage = String(pct) + "% of " + size + " Used";
   }
 
-  String key = title + "|" + value + "|" + extra;
+  // The IP to use: the one from your router when joined, otherwise the stick's own network.
+  String ip = "IP: " + (WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP()).toString();
+
+  String key = String(titleColor) + "|" + usage + "|" + ip;
   if (key == lastScreenKey) return;      // nothing changed: no redraw, no flicker
   lastScreenKey = key;
 
+  // Lines 2 and 3 use LovyanGFX's built-in Font2 (16 px tall); a line too wide for
+  // it (a very long IP) falls back to the small 6 x 8 font. Each is centred in its band.
+  const int w = lcdPtr->width() - 8;
+  auto line = [&](const String& t, int bandTop, int bandHeight) {
+    lcdPtr->setFont(&fonts::Font2);
+    if (lcdPtr->textWidth(t.c_str()) > w) lcdPtr->setFont(&fonts::Font0);
+    int y = bandTop + (bandHeight - lcdPtr->fontHeight()) / 2;
+    lcdPtr->setCursor(4, y < bandTop ? bandTop : y);
+    lcdPtr->print(t.c_str());
+  };
+
   lcdPtr->fillScreen(C_BLACK);
-  lcdPtr->setTextSize(2);
+  lcdPtr->setTextSize(1);
   lcdPtr->setTextColor(titleColor, C_BLACK);
-  lcdPtr->setCursor(4, 3);
+  lcdPtr->setFont(&fonts::Font0);                  // 6 x 8 px: the title fits on one line
+  lcdPtr->setCursor(4, 4);
   lcdPtr->print(title.c_str());
 
-  if (bigIp) {
-    // Single-line IP, scaled up to use the full screen width (max 3x).
-    // Each character is 6 px wide at 1x; keep a 4 px margin on both sides.
-    float scale = (float)(lcdPtr->width() - 8) / (6.0f * value.length());
-    if (scale > 3.0f) scale = 3.0f;
-    int textH = (int)(8 * scale);
-    int y = 22 + (58 - textH) / 2;          // centred in the area below the title
-    lcdPtr->setTextSize(scale);
-    lcdPtr->setTextColor(C_WHITE, C_BLACK);
-    lcdPtr->setCursor(4, y);
-    lcdPtr->print(value.c_str());
-  } else {
-    lcdPtr->setTextSize(1);
-    lcdPtr->setTextColor(C_GREY, C_BLACK);
-    lcdPtr->setCursor(4, 26);
-    lcdPtr->print(label.c_str());
-
-    lcdPtr->setTextSize(value.length() <= 13 ? 2 : 1);   // long IPs drop to a smaller font
-    lcdPtr->setTextColor(C_WHITE, C_BLACK);
-    lcdPtr->setCursor(4, 37);
-    lcdPtr->print(value.c_str());
-  }
-
-  if (extra.length()) {
-    lcdPtr->setTextSize(extra.length() <= 13 ? 2 : 1);
-    lcdPtr->setCursor(4, 60);
-    lcdPtr->print(extra.c_str());
-  }
+  lcdPtr->setTextColor(C_WHITE, C_BLACK);
+  line(usage, 16, 30);
+  line(ip, 48, 30);
+  lcdPtr->setFont(&fonts::Font0);                  // the pop-up messages use the basic font
 }
 
 void formatProgress(int percent) {

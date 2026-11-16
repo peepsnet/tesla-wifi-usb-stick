@@ -12,6 +12,10 @@ start-up, at the top of the stick's web page, and on the installer page.
 - **BOOT button** picks its random chime from the library on a split card (the car's drive is only touched for the
   copy)
 - Cards that are not split work as before (one drive, edited in Wi-Fi mode)
+- **New screen layout:** `Tesla WiFi USB Stick V0.7`, how full the car's drive is (`42% of 4GB Used`), and the IP
+  address to open (your router's when joined, otherwise the stick's own). The title is orange while the car is
+  using the drive and cyan in Wi-Fi mode
+- **Installer page footnote** with the firmware version it installs, plus links to the source and releases
 
 ## 0.6 (2026-11-16)
 - **GitHub releases:** every release has a ready-to-flash `tesla-wifi-usb-stick-vX.Y-full.bin` attached (one image,

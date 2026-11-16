@@ -243,8 +243,8 @@ bool cardRead(uint32_t lba, uint8_t* buf) {
 }
 bool cardWrite(uint32_t lba, const uint8_t* buf) {
   if (formatting && (++fmtWrites & 127) == 0) {   // during the long format: let other tasks
-    delay(1);                                     // run and keep the progress page answering
-    server.handleClient();
+    delay(1);                                     // run and (First Run) keep the progress page answering
+    if (firstRun) server.handleClient();
   }
   if (rawCard) return sdmmc_write_sectors(rawCard, buf, lba, 1) == ESP_OK;
   return SD_MMC.writeRAW((uint8_t*)buf, lba);
@@ -516,6 +516,32 @@ const char* formatSplitCard(uint32_t total, uint32_t volIdSeed) {
   formatProgress(100);
   return "";
 }
+
+// Erase and re-create only the Boombox partition (the car's drive). The storage
+// partition and its files are not touched. Returns "" on success.
+const char* formatBoombox(uint32_t volIdSeed) {
+  if (!layout.split || layout.stStart <= BOOMBOX_START) return "The card is not set up";
+  uint32_t size = layout.stStart - BOOMBOX_START;
+  if (size > PART_ALIGN) size -= size % PART_ALIGN;
+  Fat32Plan pb;
+  if (!planFat32(BOOMBOX_START, size, pb)) return "Card too small for the Boombox partition";
+
+  uint64_t all = planWrites(pb) + 16, done = 0;
+  formatProgress(0);
+  if (!writeFat32(pb, "Boombox", volIdSeed, done, all)) return "Write error (Boombox)";
+
+  uint8_t m[512];                                    // partition table: Boombox + the kept storage entry
+  if (!clReadRetry(0, m)) return "Read error (partition table)";
+  memset(m + 446, 0, 64);
+  clEntry(m + 446, BOOMBOX_START, size);
+  memcpy(m + 462, layout.storeEntry, 16);
+  m[510] = 0x55; m[511] = 0xAA;
+  if (!cardWrite(0, m)) return "Write error (partition table)";
+  layout.bbStart = BOOMBOX_START;
+  layout.bbSize = size;
+  formatProgress(100);
+  return "";
+}
 // ==== CARD LAYOUT END ====
 
 // The SD card's FatFs drive number. SD_MMC keeps it in a protected member, so
@@ -527,6 +553,11 @@ struct SDMMCPeek : public SDMMCFS {
   }
 };
 uint8_t sdCardDrive() { return SDMMCPeek::drive(); }
+
+// The stick keeps a copy of the current lock chime in the sound library, so it
+// can put it back after the car's drive has been re-created.
+#define CHIME_BACKUP "/.LockChime.wav"
+bool restoreLockChime();
 
 // ==== STORE FS BEGIN ====
 // The CHIME_STORE partition of a split card, mounted at /store as a second FAT
@@ -1249,7 +1280,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tesla ul{margin:6px 0 6px 18px;padding:0}
  #tesla li{margin:4px 0}
  #tesla h4{margin:12px 0 4px}
- #tesla .sm{font-size:13px;color:#666}
+ #tesla .sm,#card .sm{font-size:13px;color:#666}
  #tabs{display:flex;gap:6px;margin:8px 0 2px}
  #tabs button{flex:1;padding:8px;border:1px solid #bbb;background:#f4f4f4;border-radius:6px;font-weight:600}
  #tabs button.on{background:#06c;color:#fff;border-color:#06c}
@@ -1266,6 +1297,10 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <input type="password" id="pass" placeholder="Password (blank if open)" maxlength="63" autocomplete="off">
  <label><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
  <div><button id="wconn">Connect</button></div>
+</details>
+<details id="card"><summary>Car drive tools</summary>
+ <p class="sm">If the car's drive is damaged or the car stops reading it, you can erase and re-create it. Only the 4 GB "Boombox" drive is erased; your sound library is kept and the last lock chime is put back. The car sees its drive disappear for about a minute.</p>
+ <button id="rebuild">Erase and re-create the Boombox drive</button>
 </details>
 <details id="tesla"><summary>Tesla lock chime guide</summary>
  <h4>What the car needs</h4>
@@ -1322,7 +1357,7 @@ async function load(){
  usb=!!st.usb;
  if(!!st.store!==hasStore){hasStore=!!st.store;vol=hasStore?'store':'car';dir=dirs[vol]}
  $('#bar').className=usb?'usb':'';
- $('#mode').textContent=usb
+ $('#mode').textContent=st.problem?'Card problem: '+st.problem+'.':usb
   ?'USB mode: the car (host) is using its drive.'+(hasStore?' You can still edit the sound library.':' Editing is disabled.')
   :'Wi-Fi mode: the car sees its drive as ejected. '+(st.total?'Car drive: '+fmt(st.used)+' used of '+fmt(st.total):'');
  if(st.ver)$('#ver').textContent='v'+st.ver;
@@ -1494,6 +1529,15 @@ function playBtn(path){
  return b;
 }
 
+$('#rebuild').onclick=async()=>{
+ if(!confirm('Erase everything on the car\'s Boombox drive and re-create it?\n\nYour sound library is kept and the last lock chime is put back.'))return;
+ try{
+  await api('/card/rebuild',{method:'POST',body:new URLSearchParams({confirm:'ERASE'})});
+  msg('Re-creating the Boombox drive. This takes about a minute; the page will not respond until it is done.');
+  setTimeout(load,3000);
+ }catch(e){msg(e.message)}
+};
+
 load();
 </script></body></html>)HTML";
 
@@ -1613,6 +1657,41 @@ void firstRunTick() {
   ESP.restart();                       // start fresh with the new layout
 }
 
+// ---------------- Re-create the car's drive ----------------
+// Formats only the Boombox partition and puts the last lock chime back. Used
+// from the web page, and at start-up when the car's drive can't be mounted.
+bool rebuildRequested = false;
+void handleCardRebuild() {
+  if (!layout.split) { server.send(409, "text/plain", "No usable SD card."); return; }
+  if (server.arg("confirm") != "ERASE") { server.send(400, "text/plain", "Not confirmed."); return; }
+  rebuildRequested = true;             // the work runs from loop()
+  server.send(200, "text/plain", "OK");
+}
+
+void doCardRebuild() {
+  rebuildRequested = false;
+  if (uploadFile) uploadFile.close();
+  if (usbMode) setUsbMode(false);      // the car sees its drive eject
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  formatting = true;
+  const char* err = formatBoombox(esp_random());
+  formatting = false;
+  SD_MMC.end();                        // forget the old file system
+  bool mounted = mountSD();
+  xSemaphoreGive(sdLock);
+  if (err[0] || !mounted) {
+    cardProblem = "Car drive unreadable";
+    showToast("Rebuild failed", err[0] ? err : "Could not mount the new drive", 15000, false);
+    return;
+  }
+  cardProblem = "";
+  sectorCount = SD_MMC.numSectors();
+  cardTotal = SD_MMC.totalBytes();
+  bool chime = restoreLockChime();
+  setUsbMode(true);                    // names the drive and gives it back to the car
+  showToast("Drive ready", chime ? "Lock chime put back" : "No lock chime to put back", 4000, true);
+}
+
 void handleList() {
   if (!requireVol()) return;
   String dir = safePath(server.arg("dir"));
@@ -1625,6 +1704,7 @@ void handleList() {
   bool first = true;
   File f = root.openNextFile();
   while (f) {
+    if (String(f.name()) == (CHIME_BACKUP + 1)) { f = root.openNextFile(); continue; }   // the stick's own copy
     if (!first) out += ',';
     first = false;
     out += "{\"n\":\"" + jsonEscape(String(f.name())) + "\",\"d\":";
@@ -1767,6 +1847,33 @@ static String wavWarnings(bool ok, const WavInfo& w) {
   return out;
 }
 
+static bool copyFile(fs::FS& srcFs, const char* src, fs::FS& dstFs, const char* dst) {
+  File in = srcFs.open(src, FILE_READ);
+  if (!in || in.isDirectory()) return false;
+  File out = dstFs.open(dst, FILE_WRITE);
+  uint8_t* buf = (uint8_t*)malloc(4096);
+  bool ok = out && buf;
+  while (ok && in.available()) {
+    size_t n = in.read(buf, 4096);
+    if (n == 0) break;
+    ok = out.write(buf, n) == n;
+  }
+  free(buf);
+  in.close();
+  if (out) out.close();
+  if (!ok) dstFs.remove(dst);
+  return ok;
+}
+
+// Keep / put back the stick's copy of the car's lock chime. Both need the
+// car's drive mounted by the stick (Wi-Fi mode, or before USB mode starts).
+void backupLockChime() {
+  if (storeMounted && SD_MMC.exists("/LockChime.wav")) copyFile(SD_MMC, "/LockChime.wav", STORE, CHIME_BACKUP);
+}
+bool restoreLockChime() {
+  return storeMounted && STORE.exists(CHIME_BACKUP) && copyFile(STORE, CHIME_BACKUP, SD_MMC, "/LockChime.wav");
+}
+
 // Copy a .wav to /LockChime.wav at the card root. The original is left untouched.
 // The copy goes to a temp file first so a failed copy never destroys an existing chime.
 // Returns "" on success, otherwise a message describing what went wrong.
@@ -1808,6 +1915,7 @@ String makeLockChime(fs::FS& srcFs, const String& src, bool fromCar) {
   }
   if (SD_MMC.exists(dstPath)) SD_MMC.remove(dstPath);
   if (!SD_MMC.rename(tmpPath, dstPath)) return "Could not rename the copy to LockChime.wav.";
+  backupLockChime();                   // so the chime survives the car's drive being re-created
   return "";
 }
 
@@ -2121,26 +2229,53 @@ void setup() {
   sdLock = xSemaphoreCreateMutex();
   loadConfig();        // settings written by the web installer (if any)
   displayInit();
+  bool repaired = false;
 
-  if (mountSD()) {
+  bool mounted = mountSD();
+  if (!mounted && rawCardOpen()) {
+    // There is a card, but no file system the stick can mount.
+    readLayout(rawCardSectors());
+    if (layout.split) {
+      // A set-up card whose car drive won't mount. Try once more, then re-create
+      // just that drive; the sound library is left alone.
+      rawCardClose();
+      delay(300);
+      mounted = mountSD();
+      if (!mounted && rawCardOpen()) {
+        showToast("Repairing", "Car drive damaged: re-creating it. Do not unplug.", 600000, false);
+        formatting = true;
+        const char* err = formatBoombox(esp_random());
+        formatting = false;
+        rawCardClose();
+        repaired = (err[0] == 0);
+        mounted = repaired && mountSD();
+      }
+      if (!mounted) cardProblem = "Car drive unreadable";
+    } else if (!layout.readError) {
+      firstRun = true;             // new, exFAT or otherwise unusable: set it up
+    } else {
+      rawCardClose();
+    }
+  }
+  if (mounted) {
     sectorCount = SD_MMC.numSectors();
     cardTotal = SD_MMC.totalBytes();
     readLayout(sectorCount);       // the car only sees the Boombox part
-    if (layout.split) STORE.begin();   // the sound library (CHIME_STORE)
-    else if (!layout.readError) firstRun = true;      // an ordinary one-partition card
-  } else if (rawCardOpen()) {
-    // There is a card, but no file system the stick can mount.
-    readLayout(rawCardSectors());
-    if (!layout.split && !layout.readError) {
-      firstRun = true;             // new, exFAT or otherwise unusable: set it up
-    } else {                       // set up, but the car's drive is damaged: don't erase the library
-      rawCardClose();
-      if (layout.split) cardProblem = "Car drive unreadable";
+    if (layout.split) {
+      STORE.begin();               // the sound library (CHIME_STORE)
+      if (repaired) {
+        bool chime = restoreLockChime();
+        showToast("Drive repaired", chime ? "Lock chime put back" : "No lock chime to put back", 4000, true);
+      } else if (storeMounted && !STORE.exists(CHIME_BACKUP)) {
+        backupLockChime();         // a chime from before the stick kept copies
+      }
+    } else if (!layout.readError) {
+      firstRun = true;             // an ordinary one-partition card
     }
   }
   // No card at all: keep the web UI up so you can see something is wrong.
   if (layout.readError) cardProblem = "SD card read error";
-  if (!firstRun && !layout.split) {                   // nothing usable: the car gets no drive
+  if (!firstRun && !(layout.split && mounted)) {      // nothing usable: the car gets no drive
     sectorCount = 0;
     cardTotal = 0;
   }
@@ -2175,6 +2310,7 @@ void setup() {
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/card/rebuild", HTTP_POST, handleCardRebuild);
   server.on("/api/list", HTTP_GET, handleList);
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/upload", HTTP_POST, handleUploadDone, handleUploadData);
@@ -2205,6 +2341,8 @@ void loop() {
     displayUpdate();
     return;
   }
+
+  if (rebuildRequested) doCardRebuild();
 
   // Host ejected the drive -> switch to Wi-Fi edit mode
   if (ejectRequested) {

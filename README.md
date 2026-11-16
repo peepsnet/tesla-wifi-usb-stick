@@ -83,8 +83,13 @@ the web page count down 10 seconds first; unplug the stick during the countdown 
 format takes a few minutes on large cards, the web page shows the progress, and the stick restarts when done.
 The car is not given a drive until the card is set up.
 
-A card that is already set up is never erased again. If the stick can't read the card at all, it reports a card
-error instead of formatting it.
+A card that is already set up is never fully erased again. If the stick can't read the card at all, it reports a
+card error instead of formatting it.
+
+**Repairing the car's drive:** every time a lock chime is set, the stick keeps a copy of it in the library (a
+hidden file, `.LockChime.wav`). If the car's drive can't be mounted when the stick starts, the stick erases and
+re-creates only the `Boombox` partition and puts that chime back. You can do the same by hand with **Car drive
+tools**, **Erase and re-create the Boombox drive** on the web page. The sound library is never touched by either.
 
 The car is shown a smaller drive that ends where `CHIME_STORE` begins, with a partition table that lists only
 `Boombox`. If the car (or a PC) reformats or repartitions its drive, the stick keeps the storage partition's entry,

@@ -10,6 +10,10 @@ start-up, at the top of the stick's web page, and on the installer page.
   and the web page (unplug to cancel). The web page shows the progress
 - Cards the stick could not mount before (unformatted, exFAT) are now set up too
 - A card that can't be read is reported as a card error, never formatted
+- **Self-repair:** if the car's drive can't be mounted at start-up, the stick re-creates just the `Boombox`
+  partition and puts the last lock chime back. The sound library is not touched
+- **Car drive tools** on the web page: a button that erases and re-creates the `Boombox` drive the same way
+- The stick keeps a copy of the current lock chime in the library (hidden file `.LockChime.wav`) for this
 - The Boombox drive is always 4 GB (half the card on small cards); the **SD card setup** section and its size
   choice are gone from the web page
 - The stick always starts as a USB drive; the installer's **When the dongle is plugged in** setting is removed

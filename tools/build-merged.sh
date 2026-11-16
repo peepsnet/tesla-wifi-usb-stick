@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the firmware with PlatformIO and merges the bootloader, partition table,
 # boot_app0 and the app into ONE image that is flashed at address 0x0.
-# Used by both GitHub workflows (web installer and releases).
+# Used by the GitHub workflow (web installer and releases).
 #
 # Usage: bash tools/build-merged.sh OUTPUT.bin
 set -euo pipefail

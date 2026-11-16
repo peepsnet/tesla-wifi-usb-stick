@@ -67,7 +67,10 @@ jobs:
       - name: Assemble the web page
         run: |
           cp site/index.html site/manifest.json _site/
-          sed -i "s/__VERSION__/${GITHUB_SHA::7}/" _site/manifest.json
+          VER=$(grep -oP '#define FW_VERSION "\K[^"]+' src/main.cpp)
+          if [ -z "$VER" ]; then echo "FW_VERSION not found in src/main.cpp"; exit 1; fi
+          echo "Firmware version $VER"
+          sed -i "s/__VERSION__/$VER (build ${GITHUB_SHA::7})/" _site/manifest.json
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v3

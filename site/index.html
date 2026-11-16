@@ -288,7 +288,7 @@
     }).then(function (data) {
       baseFw = new Uint8Array(data[0]);
       version = (data[1] && data[1].version) || "dev";
-      $("ver").textContent = "Firmware build: " + version;
+      $("ver").textContent = "Firmware version: " + version;
       if (baseFw.length < CFG_OFFSET + CFG_SIZE) throw new Error("unexpected firmware size");
       for (var i = CFG_OFFSET; i < CFG_OFFSET + CFG_SIZE; i++) {
         if (baseFw[i] !== 0xFF) throw new Error("unexpected firmware layout");

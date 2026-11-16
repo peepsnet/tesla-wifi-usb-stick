@@ -7,6 +7,8 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
+**Current version: 0.5.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
 - Web page over the dongle's own Wi-Fi: upload, download, rename, delete files, make folders
@@ -127,6 +129,13 @@ and the matching values at the top of `src/main.cpp`.
 1. Install VS Code + the PlatformIO extension.
 2. Open this folder and run **PlatformIO: Build** (or `pio run`).
 3. Hold the dongle's button while plugging it in, then **PlatformIO: Upload**.
+
+## Releasing a new version
+1. Change `#define FW_VERSION "0.5"` near the top of `src/main.cpp` (for example to `"0.6"`).
+2. Add a section for it at the top of `CHANGELOG.md`, and update "Current version" at the top of this README.
+3. Upload the changed files to `main`. The build puts the version on the installer page as
+   `0.6 (build abc1234)`, where the last part is the commit it was built from.
+4. Optional: on GitHub, **Releases**, **Draft a new release**, tag `v0.6`, so people can find old versions.
 
 ## How the web installer is built
 `.github/workflows/build-and-deploy.yml` builds the firmware on GitHub every time you push to

@@ -1,5 +1,6 @@
 /*
  * Wi-Fi USB Stick  (ESP32-S3, Arduino-ESP32 core 3.x)
+ * Version: see FW_VERSION below, and CHANGELOG.md
  *
  * Plugs into a USB host and looks like a normal flash drive (backed by a
  * microSD card). Join the stick's Wi-Fi network, open http://192.168.4.1
@@ -62,6 +63,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
+#define FW_VERSION "0.5"               // bump for every release (also listed in CHANGELOG.md)
 #define START_IN_USB_MODE true
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
@@ -884,8 +886,12 @@ void displayInit() {
   digitalWrite(LCD_BL, cfgBlOn);
   lcdPtr->setTextSize(2);
   lcdPtr->setTextColor(C_WHITE, C_BLACK);
-  lcdPtr->setCursor(4, 30);
+  lcdPtr->setCursor(4, 22);
   lcdPtr->print("Starting...");
+  lcdPtr->setTextSize(1);
+  lcdPtr->setTextColor(C_GREY, C_BLACK);
+  lcdPtr->setCursor(4, 50);
+  lcdPtr->print("Version " FW_VERSION);
 }
 
 void displayUpdate() {
@@ -1052,7 +1058,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tesla .sm,#card .sm{font-size:13px;color:#666}
  #card select{margin:4px 0}
 </style></head><body>
-<h2>Wi-Fi USB Stick</h2>
+<h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small></h2>
 <div id="bar"><span id="mode"></span><br><button id="toggle"></button></div>
 <details id="wifi"><summary>Wi-Fi network (join your router)</summary>
  <div id="wst"></div>
@@ -1129,6 +1135,7 @@ async function load(){
   ?'USB mode: the host owns the drive. Editing is disabled.'
   :'Wi-Fi mode: you can edit files. The host sees the drive as ejected. '+(st.total?fmt(st.used)+' used of '+fmt(st.total):'');
  cardinfo(st);
+ if(st.ver)$('#ver').textContent='v'+st.ver;
  $('#toggle').textContent=usb?'Switch to Wi-Fi mode (edit files)':'Give drive back to USB host';
  $('#tools').style.display=usb?'none':'';
  $('#path').textContent=usb?'':dir;
@@ -1321,6 +1328,7 @@ void handleStatus() {
     out += ",\"total\":" + String((uint32_t)(cardTotal));
     out += ",\"used\":" + String((uint32_t)(SD_MMC.usedBytes()));
   }
+  out += ",\"ver\":\"" FW_VERSION "\"";
   out += ",\"cardMB\":" + String((unsigned long)(layout.total / 2048));
   out += ",\"split\":" + String(layout.split ? 1 : 0);
   if (layout.split) {
@@ -1870,7 +1878,7 @@ void setup() {
   // USB mass storage
   msc.vendorID("ESP32");
   msc.productID(cfgLabel.c_str());
-  msc.productRevision("1.0");
+  msc.productRevision(FW_VERSION);
   msc.onRead(onRead);
   msc.onWrite(onWrite);
   msc.onStartStop(onStartStop);

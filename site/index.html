@@ -81,13 +81,6 @@
         <p class="hint">Up to 11 letters, numbers or spaces.</p>
       </div>
       <div>
-        <label for="usb">When the dongle is plugged in</label>
-        <select id="usb">
-          <option value="1">Start as a USB drive</option>
-          <option value="0">Start in Wi-Fi edit mode</option>
-        </select>
-      </div>
-      <div>
         <label for="chime">Largest random lock chime (KB)</label>
         <input type="number" id="chime" min="10" max="16000" step="1">
         <p class="hint">The button only picks .wav files smaller than this.</p>
@@ -151,17 +144,24 @@
       </esp-web-install-button>
     </div>
     <p class="muted" id="ver"></p>
-    <p class="muted">Installing replaces the dongle's firmware and, if you tick "Erase device", its saved Wi-Fi settings. Files on the microSD card are not touched.</p>
+    <p class="muted">Installing replaces the dongle's firmware and, if you tick "Erase device", its saved Wi-Fi settings. Installing itself does not touch the microSD card, but see First Run below: a card that is not set up yet is erased the first time the dongle starts with it.</p>
   </div>
 
   <div class="card">
-    <h2>After installing</h2>
+    <h2>3. First Run</h2>
     <ol>
-      <li>Insert a microSD card formatted as <strong>FAT32</strong>.</li>
-      <li>Plug the dongle in. It shows up as a USB drive on the computer, car or printer it is plugged into.</li>
-      <li>On your phone or laptop, join the Wi-Fi network you chose above, then open <code>http://192.168.4.1</code>.</li>
-      <li>Use the page to switch to Wi-Fi mode, upload or rename files, or join your home Wi-Fi.</li>
+      <li>Insert any microSD card. It does not need to be formatted first.</li>
+      <li>Plug the dongle in. If the card is not set up yet, the dongle counts down 10 seconds and then
+          sets it up by itself: a 4 GB <strong>Boombox</strong> drive for the car and the rest as a sound library
+          (<strong>CHIME_STORE</strong>) that only the dongle uses. This takes a few minutes; the dongle restarts when done.</li>
+      <li>On your phone or laptop, join the Wi-Fi network you chose above, then open <code>http://192.168.4.1</code>.
+          During First Run the page shows the progress.</li>
+      <li>Upload sounds to the library and tap <em>Make Lock Chime</em>. The car sees the Boombox drive the whole time.</li>
     </ol>
+    <div class="card warn" style="margin-bottom:0">
+      <strong>First Run erases everything on the card</strong>, without asking. Only insert a card you don't need the
+      contents of. To cancel, unplug the dongle during the 10 second countdown.
+    </div>
   </div>
 
 </main>
@@ -178,7 +178,7 @@
 
   // ---- defaults (also used by "Reset to defaults") ----
   var DEFAULTS = { lcd: true, ssid: "Tesla-USB-Stick", pass: "s3xyandiknowit", flip: "0", label: "Boombox",
-                   usb: "1", chime: 1000, channel: 1, hidden: false, bl: "0",
+                   chime: 1000, channel: 1, hidden: false, bl: "0",
                    invert: true, rgb: false, offx: 26, offy: 1 };
 
   var $ = function (id) { return document.getElementById(id); };
@@ -188,7 +188,7 @@
   function setForm(v) {
     $("lcd").checked = v.lcd;
     $("ssid").value = v.ssid; $("pass").value = v.pass; $("flip").value = v.flip; $("label").value = v.label;
-    $("usb").value = v.usb; $("chime").value = v.chime; $("channel").value = v.channel;
+    $("chime").value = v.chime; $("channel").value = v.channel;
     $("hidden").checked = v.hidden; $("bl").value = v.bl; $("invert").checked = v.invert;
     $("rgb").checked = v.rgb; $("offx").value = v.offx; $("offy").value = v.offy;
     screenFields();
@@ -224,7 +224,6 @@
     v.label = $("label").value.replace(/\s+$/, "");
     if (!/^[A-Za-z0-9 !#$%&'()\-@^_`{}~]{1,11}$/.test(v.label)) errs.push("Drive name must be 1 to 11 letters, numbers or spaces.");
     v.flip = $("flip").value === "1" ? 1 : 0;
-    v.usb = $("usb").value === "1" ? 1 : 0;
     var kb = intIn("chime", 10, 16000, "Largest lock chime", errs);
     v.chime = kb === null ? 0 : kb * 1000;
     v.channel = intIn("channel", 1, 13, "Wi-Fi channel", errs);
@@ -244,7 +243,7 @@
   function buildConfigBytes(v) {
     // "ssid=..." etc. One setting per line; the first line is the marker the firmware looks for.
     var text = ["WUSBCFG1",
-      "lcd=" + v.lcd, "ssid=" + v.ssid, "pass=" + v.pass, "flip=" + v.flip, "label=" + v.label, "usb=" + v.usb,
+      "lcd=" + v.lcd, "ssid=" + v.ssid, "pass=" + v.pass, "flip=" + v.flip, "label=" + v.label,
       "chime=" + v.chime, "offx=" + v.offx, "offy=" + v.offy, "inv=" + v.invert, "rgb=" + v.rgb,
       "bl=" + v.bl, "hid=" + v.hidden, "ch=" + v.channel].join("\n") + "\n";
     return enc.encode(text);

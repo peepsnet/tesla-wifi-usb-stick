@@ -63,7 +63,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.5"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.6"               // bump for every release (also listed in CHANGELOG.md)
 #define START_IN_USB_MODE true
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards

@@ -71,7 +71,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.8"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.9"               // bump for every release (also listed in CHANGELOG.md)
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
 #define MAX_CHIME_BYTES 1000000        // random lock chime only uses .wav files smaller than this
@@ -200,6 +200,13 @@ bool mountSD() {
   return SD_MMC.begin("/sdcard", true);   // true = 1-bit mode
 }
 
+// Sectors on the whole card. (SD_MMC.numSectors() is NOT this: it is the size of
+// the mounted file system, i.e. only the first partition.)
+uint32_t cardSectors() {
+  uint64_t n = SD_MMC.cardSize() / 512;
+  return n > 0xFFFFFFFFULL ? 0xFFFFFFFFUL : (uint32_t)n;
+}
+
 // A card that SD_MMC can't mount (brand new, exFAT, damaged file system) is
 // opened here without a file system, so First Run can still format it.
 static sdmmc_card_t* rawCard = nullptr;
@@ -314,6 +321,7 @@ void readLayout(uint32_t totalSectors) {
   const uint8_t* e2 = b + 462;                       // second partition entry
   uint32_t s = clRd32(e2 + 8), n = clRd32(e2 + 12);
   if (!clIsFat(e2[4]) || s < BOOMBOX_START || n == 0 || s + n > totalSectors || s + n < s) return;
+  if (totalSectors - (s + n) > PART_ALIGN) return;   // storage must reach the end of the card
 
   uint8_t v[512];                                    // is it really our storage partition?
   if (!clReadRetry(s, v)) { layout.readError = true; return; }
@@ -1043,7 +1051,7 @@ static void setVolumeLabelRaw(const char* label) {
 
 // ---------------- Display ----------------
 static const uint32_t C_BLACK = 0x000000, C_WHITE = 0xFFFFFF, C_CYAN = 0x00FFFF;
-static const uint32_t C_GREEN = 0x00FF00, C_ORANGE = 0xFFA000, C_GREY = 0xB0B0B0;
+static const uint32_t C_GREEN = 0x00FF00, C_ORANGE = 0xFFA000, C_GREY = 0xB0B0B0, C_RED = 0xFF3030;
 String lastScreenKey;
 
 // Short pop-up message on the screen (used by the BOOT-button lock chime)
@@ -1103,16 +1111,18 @@ void displayUpdate() {
   if (millis() < toastUntil) return;                 // a pop-up message is showing
   if (toastUntil != 0) { toastUntil = 0; lastScreenKey = ""; }   // it expired: redraw normal screen
 
-  // Three lines:   Tesla WiFi USB Stick V0.7
-  //                 42% of 4GB Used
-  //                 IP: 192.168.4.1
-  // The title is orange while the car (USB host) is using the drive, cyan in Wi-Fi mode.
-  String title = "Tesla WiFi USB Stick V" FW_VERSION;
+  // 160 x 80 layout:
+  //   [ Tesla WiFi USB Stick   v0.8 ]   header bar: orange while the car (USB host)
+  //     42% used            of 4GB       is using the drive, cyan in Wi-Fi mode
+  //   [#########.................. ]   how full the car's drive is
+  //     CAR HAS DRIVE     STICK WIFI     mode, and which network the address is on
+  //            192.168.4.1
   uint32_t titleColor = usbMode ? C_ORANGE : C_CYAN;
 
   // How full the car's drive is. In USB mode the stick counts free clusters itself
   // (the car owns the file system); in Wi-Fi mode it asks the file system (cached).
-  String usage;
+  String usage, sizeText;
+  int pct = -1;                                      // -1: no figure, show the text in `usage`
   static uint64_t wifiTotal = 0, wifiUsed = 0;
   static uint32_t wifiAt = 0;
   uint64_t total = 0, used = 0;
@@ -1141,41 +1151,64 @@ void displayUpdate() {
     if (!known) usage = "Checking space...";
   }
   if (known) {
-    int pct = (int)((used * 100 + total / 2) / total);
+    pct = (int)((used * 100 + total / 2) / total);
     if (pct > 100) pct = 100;
     double gib = total / 1073741824.0;
-    String size = gib >= 1.0 ? String((int)(gib + 0.5)) + "GB" : String((int)(total / 1048576)) + "MB";
-    usage = String(pct) + "% of " + size + " Used";
+    sizeText = "of " + (gib >= 1.0 ? String((int)(gib + 0.5)) + "GB" : String((int)(total / 1048576)) + "MB");
+    usage = String(pct) + "% used";
   }
 
-  // The IP to use: the one from your router when joined, otherwise the stick's own network.
-  String ip = "IP: " + (WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP()).toString();
+  // The address to open: the one from your router when joined, otherwise the stick's own network.
+  bool joined = WiFi.status() == WL_CONNECTED;
+  String ip = (joined ? WiFi.localIP() : WiFi.softAPIP()).toString();
 
-  String key = String(titleColor) + "|" + usage + "|" + ip;
+  String key = String(titleColor) + "|" + usage + sizeText + "|" + ip + (joined ? "J" : "A");
   if (key == lastScreenKey) return;      // nothing changed: no redraw, no flicker
   lastScreenKey = key;
 
-  // Lines 2 and 3 use LovyanGFX's built-in Font2 (16 px tall); a line too wide for
-  // it (a very long IP) falls back to the small 6 x 8 font. Each is centred in its band.
-  const int w = lcdPtr->width() - 8;
-  auto line = [&](const String& t, int bandTop, int bandHeight) {
-    lcdPtr->setFont(&fonts::Font2);
-    if (lcdPtr->textWidth(t.c_str()) > w) lcdPtr->setFont(&fonts::Font0);
-    int y = bandTop + (bandHeight - lcdPtr->fontHeight()) / 2;
-    lcdPtr->setCursor(4, y < bandTop ? bandTop : y);
-    lcdPtr->print(t.c_str());
-  };
+  const int W = lcdPtr->width();
+  auto text = [&](const String& t, int x, int y) { lcdPtr->setCursor(x, y); lcdPtr->print(t.c_str()); };
+  auto right = [&](const String& t, int y) { text(t, W - 4 - lcdPtr->textWidth(t.c_str()), y); };
+  auto centre = [&](const String& t, int y) { text(t, (W - lcdPtr->textWidth(t.c_str())) / 2, y); };
 
   lcdPtr->fillScreen(C_BLACK);
   lcdPtr->setTextSize(1);
-  lcdPtr->setTextColor(titleColor, C_BLACK);
-  lcdPtr->setFont(&fonts::Font0);                  // 6 x 8 px: the title fits on one line
-  lcdPtr->setCursor(4, 4);
-  lcdPtr->print(title.c_str());
 
+  // Header bar (6 x 8 font, dark text on the mode colour)
+  lcdPtr->fillRect(0, 0, W, 16, titleColor);
+  lcdPtr->setFont(&fonts::Font0);
+  lcdPtr->setTextColor(C_BLACK, titleColor);
+  text("Tesla WiFi USB Stick", 4, 4);
+  right("v" FW_VERSION, 4);
+
+  // Car drive: figure, size and a bar; or one line saying what is wrong
+  lcdPtr->setFont(&fonts::Font2);                  // 16 px tall
   lcdPtr->setTextColor(C_WHITE, C_BLACK);
-  line(usage, 16, 30);
-  line(ip, 48, 30);
+  if (pct >= 0) {
+    text(usage, 4, 18);
+    lcdPtr->setTextColor(C_GREY, C_BLACK);
+    right(sizeText, 18);
+    uint32_t barColor = pct >= 95 ? C_RED : pct >= 80 ? C_ORANGE : C_GREEN;
+    lcdPtr->drawRect(4, 36, W - 8, 8, C_GREY);
+    int fill = (W - 12) * pct / 100;
+    if (pct > 0 && fill < 2) fill = 2;             // anything on the drive shows
+    if (fill > 0) lcdPtr->fillRect(6, 38, fill, 4, barColor);
+  } else {
+    if (lcdPtr->textWidth(usage.c_str()) > W - 8) lcdPtr->setFont(&fonts::Font0);
+    lcdPtr->setTextColor(cardProblem.length() || sectorCount == 0 ? C_ORANGE : C_WHITE, C_BLACK);
+    centre(usage, 24);
+  }
+
+  // Mode and network (small), then the address to open (large)
+  lcdPtr->setFont(&fonts::Font0);
+  lcdPtr->setTextColor(titleColor, C_BLACK);
+  text(usbMode ? "CAR HAS DRIVE" : "EDIT MODE", 4, 50);
+  lcdPtr->setTextColor(C_GREY, C_BLACK);
+  right(joined ? "HOME WIFI" : "STICK WIFI", 50);
+  lcdPtr->setFont(&fonts::Font2);
+  if (lcdPtr->textWidth(ip.c_str()) > W - 8) lcdPtr->setFont(&fonts::Font0);
+  lcdPtr->setTextColor(C_WHITE, C_BLACK);
+  centre(ip, 62);
   lcdPtr->setFont(&fonts::Font0);                  // the pop-up messages use the basic font
 }
 
@@ -1685,7 +1718,7 @@ void doCardRebuild() {
     return;
   }
   cardProblem = "";
-  sectorCount = SD_MMC.numSectors();
+  sectorCount = cardSectors();
   cardTotal = SD_MMC.totalBytes();
   bool chime = restoreLockChime();
   setUsbMode(true);                    // names the drive and gives it back to the car
@@ -2258,7 +2291,7 @@ void setup() {
     }
   }
   if (mounted) {
-    sectorCount = SD_MMC.numSectors();
+    sectorCount = cardSectors();
     cardTotal = SD_MMC.totalBytes();
     readLayout(sectorCount);       // the car only sees the Boombox part
     if (layout.split) {

@@ -23,6 +23,10 @@
  * left in place. If the drive is in USB mode, the stick briefly takes the card
  * back from the host (the host sees an eject/reinsert) to do the copy.
  *
+ * Split card (optional, set up from the web page): the SD card is divided into a
+ * small "Boombox" partition that the car sees and a "CHIME_STORE" partition the
+ * car never sees. See the CARD LAYOUT section.
+ *
  * Wi-Fi: the stick always runs its own access point. In Wi-Fi mode it can
  * also join your router: use the "Wi-Fi network" panel on the web page to
  * scan, enter a password and connect. Credentials are saved in flash and
@@ -185,6 +189,268 @@ bool mountSD() {
   return SD_MMC.begin("/sdcard", true);   // true = 1-bit mode
 }
 
+// Raw one-sector access used by the card layout code below.
+bool formatting = false;                  // true while the card is being split
+static uint32_t fmtWrites = 0;
+bool cardRead(uint32_t lba, uint8_t* buf) { return SD_MMC.readRAW(buf, lba); }
+bool cardWrite(uint32_t lba, const uint8_t* buf) {
+  if (formatting && (++fmtWrites & 127) == 0) delay(1);   // let other tasks run during a long format
+  return SD_MMC.writeRAW((uint8_t*)buf, lba);
+}
+void formatProgress(int percent);         // shows progress on the screen (Display section)
+
+// ==== CARD LAYOUT BEGIN ====
+// Two-partition card layout ("split card"):
+//
+//   sector 0         MBR (partition table)
+//   2048 ...         partition 1: "Boombox"     FAT32, the part the car sees
+//   aligned ... end  partition 2: "CHIME_STORE" FAT32, the stick's own storage
+//
+// The car (USB host) is shown a smaller disk that ends where CHIME_STORE starts,
+// and a copy of the MBR with only partition 1 in it, so it can't see or touch
+// the storage partition. A card that was never split works exactly as before.
+//
+// This section only uses three hooks, defined before it:
+//   bool cardRead(uint32_t lba, uint8_t* buf)          read one 512-byte sector
+//   bool cardWrite(uint32_t lba, const uint8_t* buf)   write one 512-byte sector
+//   void formatProgress(int percent)                   progress while formatting
+
+#define BOOMBOX_START  2048UL          // 1 MB, the usual first-partition offset
+#define PART_ALIGN     8192UL          // 4 MB alignment (good for SD card speed)
+#define STORE_LABEL    "CHIME_STORE"   // 11 characters, marks a split card
+#define MIN_STORE_SECT 2097152UL       // keep at least 1 GB for storage
+
+struct CardLayout {
+  bool     split = false;
+  uint32_t total = 0;                  // sectors on the card
+  uint32_t hostSectors = 0;            // sectors the car is shown
+  uint32_t bbStart = 0, bbSize = 0;    // Boombox partition
+  uint32_t stStart = 0, stSize = 0;    // storage partition
+  uint8_t  storeEntry[16];             // MBR entry for the storage partition
+};
+CardLayout layout;
+
+static uint32_t clRd32(const uint8_t* p) {
+  return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void clWr16(uint8_t* p, uint32_t v) { p[0] = v; p[1] = v >> 8; }
+static void clWr32(uint8_t* p, uint32_t v) { p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24; }
+static bool clIsFat(uint8_t t) { return t == 0x0B || t == 0x0C; }
+
+// Work out whether the card is split, and what the car should be shown.
+void readLayout(uint32_t totalSectors) {
+  layout = CardLayout();
+  layout.total = totalSectors;
+  layout.hostSectors = totalSectors;
+  uint8_t b[512];
+  if (totalSectors == 0 || !cardRead(0, b) || b[510] != 0x55 || b[511] != 0xAA) return;
+
+  const uint8_t* e2 = b + 462;                       // second partition entry
+  uint32_t s = clRd32(e2 + 8), n = clRd32(e2 + 12);
+  if (!clIsFat(e2[4]) || s < BOOMBOX_START || n == 0 || s + n > totalSectors || s + n < s) return;
+
+  uint8_t v[512];                                    // is it really our storage partition?
+  if (!cardRead(s, v) || v[510] != 0x55 || v[511] != 0xAA) return;
+  if (memcmp(v + 82, "FAT32   ", 8) != 0 || memcmp(v + 71, STORE_LABEL, 11) != 0) return;
+
+  layout.split = true;
+  layout.stStart = s;
+  layout.stSize = n;
+  layout.hostSectors = s;                            // the car's disk ends here
+  memcpy(layout.storeEntry, e2, 16);
+  const uint8_t* e1 = b + 446;
+  uint32_t s1 = clRd32(e1 + 8), n1 = clRd32(e1 + 12);
+  if (clIsFat(e1[4]) && s1 > 0 && n1 > 0 && s1 + n1 <= s) {
+    layout.bbStart = s1;
+    layout.bbSize = n1;
+  } else {                                           // the car reformatted it its own way
+    layout.bbStart = 0;
+    layout.bbSize = s;
+  }
+}
+
+// ---- What the car sees ----
+// Sector 0 is shown with partition entries 2-4 blanked, and the disk ends at
+// the storage partition. If the car writes sector 0 (for example when it
+// formats the drive), entries 2-4 are put back so the storage partition survives.
+bool hostRead(uint32_t lba, uint8_t* buf) {
+  if (lba >= layout.hostSectors) return false;
+  if (!cardRead(lba, buf)) return false;
+  if (layout.split && lba == 0) memset(buf + 462, 0, 48);
+  return true;
+}
+
+bool hostWrite(uint32_t lba, const uint8_t* buf) {
+  if (lba >= layout.hostSectors) return false;
+  if (!(layout.split && lba == 0)) return cardWrite(lba, buf);
+  uint8_t m[512];
+  memcpy(m, buf, 512);
+  memcpy(m + 462, layout.storeEntry, 16);
+  memset(m + 478, 0, 32);
+  m[510] = 0x55;
+  m[511] = 0xAA;
+  return cardWrite(0, m);
+}
+
+// ---- Formatting ----
+static uint8_t clZero[512];
+
+static bool clZeroRange(uint32_t lba, uint32_t count, uint64_t& done, uint64_t all) {
+  for (uint32_t i = 0; i < count; i++) {
+    if (!cardWrite(lba + i, clZero)) return false;
+    done++;
+    if ((done & 1023) == 0) formatProgress((int)(done * 100 / all));
+  }
+  return true;
+}
+
+struct Fat32Plan {
+  uint32_t start, size, rsvd, fatSz, spc, clusters;
+};
+
+// Lay out a FAT32 volume of `size` sectors starting at `start`. Returns false
+// if the partition is too small for FAT32.
+static bool planFat32(uint32_t start, uint32_t size, Fat32Plan& p) {
+  p.start = start;
+  p.size = size;
+  // Microsoft's usual cluster sizes: up to 8 GB 4 KB, 16 GB 8 KB, 32 GB 16 KB, larger 32 KB
+  p.spc = size <= 16777216UL ? 8 : size <= 33554432UL ? 16 : size <= 67108864UL ? 32 : 64;
+  for (;;) {
+    p.rsvd = 32;
+    uint32_t tmp2 = 128 * p.spc + 1;                 // (256 * spc + 2 FATs) / 2
+    p.fatSz = (size - p.rsvd + tmp2 - 1) / tmp2;
+    uint32_t dataStart = start + p.rsvd + 2 * p.fatSz;
+    p.rsvd += (PART_ALIGN - dataStart % PART_ALIGN) % PART_ALIGN;   // align the data area
+    if (size <= p.rsvd + 2 * p.fatSz) return false;
+    p.clusters = (size - p.rsvd - 2 * p.fatSz) / p.spc;
+    if (p.clusters >= 65525 || p.spc == 1) break;
+    p.spc /= 2;                                      // small partition: smaller clusters
+  }
+  return p.clusters >= 65525 && p.clusters < 0x0FFFFFF5UL && (uint64_t)p.fatSz * 128 >= p.clusters + 2;
+}
+
+static uint64_t planWrites(const Fat32Plan& p) { return (uint64_t)p.rsvd + 2ULL * p.fatSz + p.spc; }
+
+// Write an empty FAT32 file system. The boot sector is written last, so a
+// half-finished format never looks like a valid file system.
+static bool writeFat32(const Fat32Plan& p, const char* label, uint32_t volId, uint64_t& done, uint64_t all) {
+  uint8_t s[512];
+  char name[11];
+  memset(name, ' ', 11);
+  for (int i = 0; i < 11 && label[i]; i++) name[i] = label[i];
+
+  if (!clZeroRange(p.start, p.rsvd, done, all)) return false;          // reserved area
+  uint32_t fat1 = p.start + p.rsvd;
+  for (int f = 0; f < 2; f++) {                                         // both FATs
+    uint32_t fs = fat1 + f * p.fatSz;
+    memset(s, 0, 512);
+    clWr32(s + 0, 0x0FFFFFF8);                                          // media byte entry
+    clWr32(s + 4, 0x0FFFFFFF);
+    clWr32(s + 8, 0x0FFFFFFF);                                          // root directory: one cluster
+    if (!cardWrite(fs, s)) return false;
+    done++;
+    if (!clZeroRange(fs + 1, p.fatSz - 1, done, all)) return false;
+  }
+  uint32_t root = fat1 + 2 * p.fatSz;                                  // cluster 2 = root directory
+  memset(s, 0, 512);
+  memcpy(s, name, 11);
+  s[11] = 0x08;                                                         // volume label entry
+  if (!cardWrite(root, s)) return false;
+  done++;
+  if (!clZeroRange(root + 1, p.spc - 1, done, all)) return false;
+
+  memset(s, 0, 512);                                                    // FSInfo (+ backup)
+  clWr32(s + 0, 0x41615252);
+  clWr32(s + 484, 0x61417272);
+  clWr32(s + 488, p.clusters - 1);                                      // free clusters
+  clWr32(s + 492, 3);                                                   // next free cluster
+  s[510] = 0x55; s[511] = 0xAA;
+  if (!cardWrite(p.start + 1, s) || !cardWrite(p.start + 7, s)) return false;
+  memset(s, 0, 512);
+  s[510] = 0x55; s[511] = 0xAA;
+  if (!cardWrite(p.start + 2, s) || !cardWrite(p.start + 8, s)) return false;
+
+  memset(s, 0, 512);                                                    // boot sector
+  s[0] = 0xEB; s[1] = 0x58; s[2] = 0x90;
+  memcpy(s + 3, "MSWIN4.1", 8);
+  clWr16(s + 11, 512);
+  s[13] = (uint8_t)p.spc;
+  clWr16(s + 14, p.rsvd);
+  s[16] = 2;                                                            // number of FATs
+  s[21] = 0xF8;                                                         // fixed disk
+  clWr16(s + 24, 63);
+  clWr16(s + 26, 255);
+  clWr32(s + 28, p.start);                                              // hidden sectors
+  clWr32(s + 32, p.size);
+  clWr32(s + 36, p.fatSz);
+  clWr32(s + 44, 2);                                                    // root cluster
+  clWr16(s + 48, 1);                                                    // FSInfo sector
+  clWr16(s + 50, 6);                                                    // backup boot sector
+  s[64] = 0x80;
+  s[66] = 0x29;
+  clWr32(s + 67, volId);
+  memcpy(s + 71, name, 11);
+  memcpy(s + 82, "FAT32   ", 8);
+  s[510] = 0x55; s[511] = 0xAA;
+  if (!cardWrite(p.start + 6, s)) return false;                         // backup copy first
+  return cardWrite(p.start, s);
+}
+
+static void clEntry(uint8_t* e, uint32_t start, uint32_t size) {
+  memset(e, 0, 16);
+  e[1] = 0xFE; e[2] = 0xFF; e[3] = 0xFF;                                // CHS unused (LBA only)
+  e[4] = 0x0C;                                                          // FAT32 (LBA)
+  e[5] = 0xFE; e[6] = 0xFF; e[7] = 0xFF;
+  clWr32(e + 8, start);
+  clWr32(e + 12, size);
+}
+
+// Size choice: 0 = 4 GB Boombox, 1 = 8 GB, 2 = half the card.
+uint32_t boomboxSectors(uint32_t total, int choice) {
+  uint32_t usable = total > BOOMBOX_START ? total - BOOMBOX_START : 0;
+  uint32_t want = choice == 0 ? 8388608UL : choice == 1 ? 16777216UL : usable / 2;
+  if (want + MIN_STORE_SECT + PART_ALIGN > usable) want = usable / 2;   // small card: split it in half
+  return want - want % PART_ALIGN;
+}
+
+// Erase the whole card and split it. Returns "" on success, or what went wrong.
+// volIdSeed should be something random (for example esp_random()).
+const char* formatSplitCard(uint32_t total, int choice, uint32_t volIdSeed) {
+  uint32_t bb = boomboxSectors(total, choice);
+  uint32_t st = BOOMBOX_START + bb;
+  st += (PART_ALIGN - st % PART_ALIGN) % PART_ALIGN;
+  if (st >= total) return "Card too small";
+  uint32_t stSize = total - st;
+
+  Fat32Plan pb, ps;
+  if (!planFat32(BOOMBOX_START, bb, pb)) return "Card too small for the Boombox partition";
+  if (!planFat32(st, stSize, ps)) return "Card too small for the storage partition";
+
+  uint64_t all = BOOMBOX_START + planWrites(pb) + planWrites(ps) + 64, done = 0;
+  formatProgress(0);
+
+  // 1. Remove the old partition table and any GPT (start and end of the card),
+  //    so nothing half-formatted is ever recognised.
+  if (!clZeroRange(0, BOOMBOX_START, done, all)) return "Write error";
+  if (!clZeroRange(total - 34, 34, done, all)) return "Write error";
+
+  // 2. The two empty FAT32 file systems.
+  if (!writeFat32(pb, "Boombox", volIdSeed, done, all)) return "Write error (Boombox)";
+  if (!writeFat32(ps, STORE_LABEL, volIdSeed ^ 0x5A5A1234UL, done, all)) return "Write error (storage)";
+
+  // 3. The partition table, last.
+  uint8_t m[512];
+  memset(m, 0, 512);
+  clWr32(m + 440, volIdSeed ^ 0xA5A5A5A5UL);                             // disk signature
+  clEntry(m + 446, BOOMBOX_START, bb);
+  clEntry(m + 462, st, stSize);
+  m[510] = 0x55; m[511] = 0xAA;
+  if (!cardWrite(0, m)) return "Write error (partition table)";
+  formatProgress(100);
+  return "";
+}
+// ==== CARD LAYOUT END ====
+
 // ---------------- Wi-Fi client helpers ----------------
 // Up to MAX_NETS networks are remembered in flash. In Wi-Fi mode the stick scans
 // now and then and joins the strongest remembered network that is in range.
@@ -334,7 +600,7 @@ static int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufs
   bool ok = true;
   uint8_t* p = (uint8_t*)buffer;
   for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
-    ok = SD_MMC.readRAW(p + i * 512, lba + i);
+    ok = hostRead(lba + i, p + i * 512);      // the car only sees its own part of the card
   }
   xSemaphoreGive(sdLock);
   return ok ? (int32_t)bufsize : -1;
@@ -346,7 +612,7 @@ static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t 
   xSemaphoreTake(sdLock, portMAX_DELAY);
   bool ok = true;
   for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
-    ok = SD_MMC.writeRAW(buffer + i * 512, lba + i);
+    ok = hostWrite(lba + i, buffer + i * 512);
   }
   xSemaphoreGive(sdLock);
   return ok ? (int32_t)bufsize : -1;
@@ -369,7 +635,7 @@ static uint32_t le32(const uint8_t* p) {
 
 static bool readSector(uint32_t lba, uint8_t* buf) {
   xSemaphoreTake(sdLock, portMAX_DELAY);
-  bool ok = usbMode && SD_MMC.readRAW(buf, lba);
+  bool ok = usbMode && hostRead(lba, buf);
   xSemaphoreGive(sdLock);
   return ok;
 }
@@ -403,7 +669,7 @@ void freeScanBegin() {
         break;
       }
     }
-    if (!found || part >= sectorCount) { freeState = 2; return; }
+    if (!found || part >= layout.hostSectors) { freeState = 2; return; }
     if (!readSector(part, b)) { lastWriteMs = millis(); return; }
     if (!looksLikeBootSector(b)) { freeState = 2; return; }
   }
@@ -483,7 +749,7 @@ static void setVolumeLabelRaw(const char* label) {
 
   // Find the FAT boot sector (directly, or via the MBR partition table)
   uint32_t part = 0;
-  if (!SD_MMC.readRAW(b, 0)) return;
+  if (!hostRead(0, b)) return;
   if (memcmp(b + 3, "EXFAT   ", 8) == 0) return;
   if (!looksLikeBootSector(b)) {
     bool found = false;
@@ -496,8 +762,8 @@ static void setVolumeLabelRaw(const char* label) {
         break;
       }
     }
-    if (!found || part >= sectorCount) return;
-    if (!SD_MMC.readRAW(b, part)) return;
+    if (!found || part >= layout.hostSectors) return;
+    if (!hostRead(part, b)) return;
     if (!looksLikeBootSector(b)) return;
   }
 
@@ -518,7 +784,7 @@ static void setVolumeLabelRaw(const char* label) {
   uint32_t sigOff = fat32 ? 66 : 38, lblOff = fat32 ? 71 : 43;
   if (b[sigOff] == 0x29 && memcmp(b + lblOff, name, 11) != 0) {
     memcpy(b + lblOff, name, 11);
-    SD_MMC.writeRAW(b, part);
+    hostWrite(part, b);
   }
 
   // 2) Volume-label entry in the root directory (this is what Windows displays)
@@ -537,7 +803,7 @@ static void setVolumeLabelRaw(const char* label) {
   int freeSector = -1, freeIdx = -1;
   bool endOfDir = false;
   for (uint32_t sec = 0; sec < dirSectors && !endOfDir; sec++) {
-    if (!SD_MMC.readRAW(d, dirStart + sec)) return;
+    if (!hostRead(dirStart + sec, d)) return;
     for (int i = 0; i < 16; i++) {
       uint8_t* e = d + i * 32;
       if (e[0] == 0x00 || e[0] == 0xE5) {            // free slot
@@ -548,7 +814,7 @@ static void setVolumeLabelRaw(const char* label) {
       if ((e[11] & 0x3F) == 0x08) {                  // existing volume label entry
         if (memcmp(e, name, 11) != 0) {
           memcpy(e, name, 11);
-          SD_MMC.writeRAW(d, dirStart + sec);
+          hostWrite(dirStart + sec, d);
         }
         return;
       }
@@ -557,12 +823,12 @@ static void setVolumeLabelRaw(const char* label) {
 
   // No label entry yet: create one in the first free slot (if there is room)
   if (freeSector < 0) return;
-  if (!SD_MMC.readRAW(d, dirStart + freeSector)) return;
+  if (!hostRead(dirStart + freeSector, d)) return;
   uint8_t* e = d + freeIdx * 32;
   memset(e, 0, 32);
   memcpy(e, name, 11);
   e[11] = 0x08;                                      // attribute: volume label
-  SD_MMC.writeRAW(d, dirStart + freeSector);
+  hostWrite(dirStart + freeSector, d);
 }
 
 // ---------------- Display ----------------
@@ -696,6 +962,13 @@ void displayUpdate() {
   }
 }
 
+void formatProgress(int percent) {
+  static int last = -1;
+  if (percent == last) return;
+  last = percent;
+  showToast("Card setup", String(percent) + "% done. Do not unplug the stick.", 600000, true);
+}
+
 // ---------------- Mode switching ----------------
 void setUsbMode(bool on) {
   if (on == usbMode) return;
@@ -776,7 +1049,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tesla ul{margin:6px 0 6px 18px;padding:0}
  #tesla li{margin:4px 0}
  #tesla h4{margin:12px 0 4px}
- #tesla .sm{font-size:13px;color:#666}
+ #tesla .sm,#card .sm{font-size:13px;color:#666}
+ #card select{margin:4px 0}
 </style></head><body>
 <h2>Wi-Fi USB Stick</h2>
 <div id="bar"><span id="mode"></span><br><button id="toggle"></button></div>
@@ -789,6 +1063,16 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <input type="password" id="pass" placeholder="Password (blank if open)" maxlength="63" autocomplete="off">
  <label><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
  <div><button id="wconn">Connect</button></div>
+</details>
+<details id="card"><summary>SD card setup</summary>
+ <div id="cardinfo"></div>
+ <p class="sm">Splitting the card gives the car a small "Boombox" drive and keeps a separate "CHIME_STORE" area for the stick that the car never sees. <b>It erases everything on the card.</b> Large cards can take several minutes; the stick restarts when done.</p>
+ <select id="cardsize">
+  <option value="0">Boombox 4 GB (recommended)</option>
+  <option value="1">Boombox 8 GB</option>
+  <option value="2">Half the card</option>
+ </select>
+ <button id="cardsplit">Erase and split the card</button>
 </details>
 <details id="tesla"><summary>Tesla lock chime guide</summary>
  <h4>What the car needs</h4>
@@ -844,6 +1128,7 @@ async function load(){
  $('#mode').textContent=usb
   ?'USB mode: the host owns the drive. Editing is disabled.'
   :'Wi-Fi mode: you can edit files. The host sees the drive as ejected. '+(st.total?fmt(st.used)+' used of '+fmt(st.total):'');
+ cardinfo(st);
  $('#toggle').textContent=usb?'Switch to Wi-Fi mode (edit files)':'Give drive back to USB host';
  $('#tools').style.display=usb?'none':'';
  $('#path').textContent=usb?'':dir;
@@ -1003,6 +1288,25 @@ function playBtn(path){
  return b;
 }
 
+function gb(mb){return (mb/1024).toFixed(mb<10240?1:0)+' GB'}
+function cardinfo(st){
+ const c=$('#cardinfo');
+ if(!st.cardMB){c.textContent='No SD card found.';return}
+ c.textContent=st.split
+  ?'This card is split: Boombox '+gb(st.bbMB)+' (what the car sees) + storage '+gb(st.stMB)+'.'
+  :'This card is not split: the car sees all '+gb(st.cardMB)+'.';
+}
+$('#cardsplit').onclick=async()=>{
+ if(usb){alert('Switch to Wi-Fi mode first (button at the top).');return}
+ const size=$('#cardsize').value;
+ const a=prompt('This ERASES EVERYTHING on the SD card, including any recordings and sounds.\n\nType ERASE to continue.');
+ if(a!=='ERASE')return;
+ try{
+  await api('/card/split',{method:'POST',body:new URLSearchParams({size,confirm:'ERASE'})});
+  msg('Setting up the card. This can take a few minutes on large cards. The stick restarts when it is done; then reconnect to its Wi-Fi and reload this page.');
+ }catch(e){msg(e.message)}
+};
+
 load();
 </script></body></html>)HTML";
 
@@ -1017,8 +1321,46 @@ void handleStatus() {
     out += ",\"total\":" + String((uint32_t)(cardTotal));
     out += ",\"used\":" + String((uint32_t)(SD_MMC.usedBytes()));
   }
+  out += ",\"cardMB\":" + String((unsigned long)(layout.total / 2048));
+  out += ",\"split\":" + String(layout.split ? 1 : 0);
+  if (layout.split) {
+    out += ",\"bbMB\":" + String((unsigned long)(layout.hostSectors / 2048));
+    out += ",\"stMB\":" + String((unsigned long)(layout.stSize / 2048));
+  }
   out += "}";
   server.send(200, "application/json", out);
+}
+
+// Erase the card and split it (the actual work runs from loop(), then the stick restarts).
+int splitChoice = -1;
+void handleCardSplit() {
+  if (!requireWifiMode()) return;
+  if (layout.total == 0) { server.send(400, "text/plain", "No SD card found."); return; }
+  if (server.arg("confirm") != "ERASE") { server.send(400, "text/plain", "Not confirmed."); return; }
+  int c = server.arg("size").toInt();
+  if (c < 0 || c > 2) c = 0;
+  splitChoice = c;
+  server.send(200, "text/plain", "OK");
+}
+
+void doCardSplit() {
+  int choice = splitChoice;
+  splitChoice = -1;
+  if (uploadFile) uploadFile.close();
+  staDisconnect();
+  xSemaphoreTake(sdLock, portMAX_DELAY);
+  formatting = true;
+  const char* err = formatSplitCard(layout.total, choice, esp_random());
+  formatting = false;
+  xSemaphoreGive(sdLock);
+  if (err[0]) {
+    showToast("Card setup failed", err, 15000, false);
+    delay(15000);
+  } else {
+    showToast("Card ready", "Restarting...", 3000, true);
+    delay(2000);
+  }
+  ESP.restart();                       // start fresh with the new layout
 }
 
 void handleList() {
@@ -1522,6 +1864,7 @@ void setup() {
   } else {
     sectorCount = SD_MMC.numSectors();
     cardTotal = SD_MMC.totalBytes();
+    readLayout(sectorCount);       // split card? then the car only sees the Boombox part
   }
 
   // USB mass storage
@@ -1532,7 +1875,7 @@ void setup() {
   msc.onWrite(onWrite);
   msc.onStartStop(onStartStop);
   msc.mediaPresent(false);
-  msc.begin(sectorCount, 512);
+  msc.begin(layout.hostSectors, 512);
   USB.productName(cfgLabel.c_str());
   USB.begin();
 
@@ -1545,6 +1888,7 @@ void setup() {
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
+  server.on("/card/split", HTTP_POST, handleCardSplit);
   server.on("/api/list", HTTP_GET, handleList);
   server.on("/download", HTTP_GET, handleDownload);
   server.on("/upload", HTTP_POST, handleUploadDone, handleUploadData);
@@ -1575,6 +1919,8 @@ void loop() {
     ejectRequested = false;
     if (usbMode) setUsbMode(false);
   }
+
+  if (splitChoice >= 0) doCardSplit();   // never returns (restarts the stick)
 
   freeScanTick();      // USB mode: count free clusters in small slices
   displayUpdate();     // redraws only when something changed

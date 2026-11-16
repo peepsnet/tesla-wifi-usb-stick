@@ -18,6 +18,7 @@ a general-purpose Wi-Fi USB drive for other devices.)
   Up to 8 networks are remembered and can be deleted individually from the web page
 - Screen (if fitted) shows the mode, the IP address, connected clients or free space
 - Drive is named "Boombox" (changeable)
+- Optional split card: a small Boombox drive for the car and a hidden storage area for the stick (experimental, see below)
 
 ## Install (no tools needed)
 Open the installer page (GitHub Pages for this repository) in **Chrome or Edge on a desktop**
@@ -66,6 +67,24 @@ drive eject and reinsert), copies the file, and gives the drive back.
   slow for recording. If the car offers to **format** the drive, decline: that would erase the card.
 - The drive disappears from the car for a moment whenever you switch between USB and Wi-Fi mode.
 - The web page has no login. Anyone who can join the stick's Wi-Fi can change the files.
+
+## Split card (experimental)
+On the device page, **SD card setup** can erase the card and split it in two:
+
+| Partition | Size | Who uses it |
+|---|---|---|
+| `Boombox` (FAT32) | 4 GB (recommended), 8 GB, or half the card | The car. This is the only part it can see |
+| `CHIME_STORE` (FAT32) | Everything else | The stick only. The car never sees it |
+
+The car is shown a smaller drive that ends where `CHIME_STORE` begins, with a partition table that lists only
+`Boombox`. If the car (or a PC) reformats or repartitions its drive, the stick keeps the storage partition's entry,
+so `CHIME_STORE` and its files survive. Put the card in a PC card reader and you will see both partitions.
+
+**Status:** this is step 1. The card layout and the car's limited view are in place; the web page still edits the
+`Boombox` partition as before. Next, the web page will keep your sound library on `CHIME_STORE` (no eject needed)
+and only touch `Boombox` when you apply a lock chime.
+
+Splitting erases everything on the card and can take a few minutes on large cards. The stick restarts when done.
 
 ## Settings you can choose before flashing
 The installer page has a form. Whatever you pick is written into a small "cfg" area of the

@@ -25,14 +25,13 @@
  * installer can write a small "cfg" block into flash (Wi-Fi name/password,
  * screen flip, drive name, ...) which overrides them at boot (see loadConfig).
  *
- * BOOT button: a short press restarts the stick (the car sees the drive
- * unplugged and plugged in again). Holding it for 2 seconds picks a random
- * .wav (smaller than the size limit) from the library and copies it to
- * /LockChime.wav on the car's drive.
+ * BOOT button: a short press picks a random .wav (smaller than the size
+ * limit) from the library, copies it to /LockChime.wav on the car's drive and
+ * restarts the stick. Holding it for more than 5 seconds only restarts.
  *
- * Changing the chime in USB mode: the stick takes the drive from the car,
- * copies the file, waits 5 seconds and gives it back, so the car notices a
- * "new" drive and reads the new sound. Each step is shown on the screen.
+ * Changing the chime always ends with a restart: the car only reads the new
+ * sound when the stick looks unplugged and plugged in again. Each step is
+ * shown on the screen.
  *
  * Wi-Fi: the stick always runs its own access point. It can also join your
  * router, in every mode: use the "Wi-Fi network" panel on the web page to
@@ -70,11 +69,10 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.11"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.12"               // bump for every release (also listed in CHANGELOG.md)
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
-#define BUTTON_LONG_MS 2000            // hold this long for a random lock chime (a short press restarts)
-#define CHIME_EJECT_MS 5000            // after a new chime: keep the car's drive away this long, so the car re-reads it
+#define BUTTON_LONG_MS 5000            // hold this long to just restart (a short press picks a random lock chime)
 #define MAX_CHIME_BYTES 1000000        // random lock chime only uses .wav files smaller than this
 
 // SD card pins (1-bit SD_MMC). LilyGo T-Dongle S3 values:
@@ -1436,8 +1434,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <ul>
   <li>Upload .wav files to the <b>Sound library</b> (any folder). You can add, play and organise them any time, even while the car is using its drive. Press <b>Play</b> to listen first.</li>
   <li>Press <b>Make Lock Chime</b> on the one you want. It is copied to /LockChime.wav on the car drive and the original stays in the library. The page warns you if the file doesn't look right.</li>
-  <li>If the car is using its drive, the stick takes it away, copies the file, waits 5 seconds and gives it back, so the car reads the new sound. The screen shows each step. This takes about 10 seconds.</li>
-  <li><b>Button on the stick:</b> hold it for 2 seconds to make a random 16-bit PCM .wav from the library (under the size limit) the lock chime. A short press restarts the stick, which the car sees as unplugging it and plugging it back in.</li>
+  <li>The stick then <b>restarts</b>, because the car only reads the new sound when the stick looks unplugged and plugged in again. The screen shows each step. Your phone may drop off the stick's Wi-Fi for a few seconds.</li>
+  <li><b>Button on the stick:</b> a short press makes a random 16-bit PCM .wav from the library (under the size limit) the lock chime, then restarts. Holding it for more than 5 seconds only restarts the stick.</li>
  </ul>
  <h4>If the car still plays the old sound</h4>
  <ul>
@@ -1529,15 +1527,15 @@ async function load(){
    x.appendChild(playBtn(join(dir,f.n)));
    if(vol==='store'||!(dir==='/'&&f.n.toLowerCase()==='lockchime.wav'))
    x.appendChild(ibtn('chime','Make Lock Chime',async()=>{
-    let m='Copy '+f.n+' to LockChime.wav on the car drive?\n(An existing LockChime.wav will be replaced.'+(usb?' The car will lose its drive for about 10 seconds.':'')+')';
+    let m='Copy '+f.n+' to LockChime.wav on the car drive?\n(An existing LockChime.wav will be replaced.'+' The stick restarts afterwards so the car reads the new sound.'+')';
     try{
      const i=await (await api('/api/wavinfo?path='+enc(join(dir,f.n))+V())).json();
      if(i.ok)m+='\n\n'+(i.ch==1?'Mono':i.ch==2?'Stereo':i.ch+' channels')+', '+i.bits+'-bit, '+i.rate+' Hz, '+i.secs.toFixed(1)+' s, '+fmt(i.size);
      if(i.warn.length)m+='\n\nWarnings:\n- '+i.warn.join('\n- ')+'\n\nThe car may not play this file. Copy it anyway?';
     }catch(e){}
     if(!confirm(m))return;
-    msg(usb?'Copying. The car gets its drive back in about 10 seconds...':'Copying...');
-    try{await api('/lockchime?path='+enc(join(dir,f.n))+V(),{method:'POST'});msg();alert('LockChime.wav is now '+f.n+'.');load()}catch(e){msg(e.message)}
+    msg('Copying...');
+    try{await api('/lockchime?path='+enc(join(dir,f.n))+V(),{method:'POST'});afterChime(f.n)}catch(e){msg(e.message)}
    }));
   }
   x.appendChild(ibtn('rename','Rename',async()=>{
@@ -1552,6 +1550,12 @@ async function load(){
  }
 }
 
+function afterChime(n){
+ const t='LockChime.wav is now '+n+'. The stick is restarting so the car reads it; this page comes back by itself (rejoin the stick\'s Wi-Fi if your phone dropped it).';
+ $('#files').innerHTML='';$('#tools').style.display='none';msg(t);
+ const w=()=>fetch('/api/status').then(r=>r.json()).then(()=>load().then(()=>msg('LockChime.wav is now '+n+'.'))).catch(()=>{msg(t);setTimeout(w,2000)});
+ setTimeout(w,6000);
+}
 $('#tlib').onclick=()=>{vol='store';dir=dirs.store;load()};
 $('#tcar').onclick=()=>{vol='car';dir=dirs.car;load()};
 $('#toggle').onclick=async()=>{
@@ -2080,10 +2084,11 @@ String makeLockChime(fs::FS& srcFs, const String& src, bool fromCar) {
   return "";
 }
 
-// Copy a chime to the car's drive, showing each step on the screen. If the car
-// is using the drive (USB mode), the stick takes it away, copies the file, keeps
-// the drive away for CHIME_EJECT_MS and then gives it back: a quick eject and
-// return is not always enough for the car to read the new sound.
+// Copy a chime to the car's drive, showing each step on the screen, and then
+// ask for a restart (done from loop(), after the web page has its answer). The
+// car only reads the new sound when the stick restarts: taking the drive away
+// and giving it back is not enough.
+bool restartRequested = false;
 String applyLockChime(fs::FS& srcFs, const String& src, bool fromCar) {
   const char* H = "Lock Chime";
   String name = src.substring(src.lastIndexOf('/') + 1);
@@ -2094,19 +2099,14 @@ String applyLockChime(fs::FS& srcFs, const String& src, bool fromCar) {
   }
   showBig(H, "Copying the sound", "COPY", name, C_CYAN, 30000);
   String err = makeLockChime(srcFs, src, fromCar);
-  if (wasUsb) {
-    if (err.length() == 0) {
-      for (int left = CHIME_EJECT_MS / 1000; left > 0; left--) {
-        showBig(H, "Drive returns in", String(left) + " s", name, C_ORANGE, 30000);
-        delay(1000);
-      }
-    }
-    showBig(H, "Giving drive to car", "MOUNT", name, C_ORANGE, 30000);
-    setUsbMode(true);
+  if (err.length()) {
+    if (wasUsb) setUsbMode(true);      // nothing changed: the car gets its drive back
+    showToast("Chime failed", err, 4000, false);
+    return err;
   }
-  if (err.length()) showToast("Chime failed", err, 4000, false);
-  else showBig(H, "New lock chime set", "DONE", name, C_GREEN, 3000);
-  return err;
+  showBig(H, "New lock chime set", "DONE", name, C_GREEN, 30000);
+  restartRequested = true;
+  return "";
 }
 
 void handleLockChime() {
@@ -2342,10 +2342,10 @@ void randomLockChime() {
   if (applyLockChime(STORE, chosen, false).length() == 0) lastChime = chosen;
 }
 
-// Short press of the BOOT button: restart, after letting go of the card and the
-// USB drive cleanly. To the car this looks like unplugging the stick and
+// Restart, after letting go of the card and the USB drive cleanly. To the car this looks like unplugging the stick and
 // plugging it in again.
 void restartStick() {
+  delay(700);                          // leave the last screen up long enough to read
   showBig("Restart", "Restarting the stick", "...", "Drive will reconnect", C_CYAN, 30000);
   if (uploadFile) uploadFile.close();
   msc.mediaPresent(false);
@@ -2526,6 +2526,7 @@ void loop() {
   }
 
   if (rebuildRequested) doCardRebuild();
+  if (restartRequested) restartStick();   // a new lock chime was set (never returns)
 
   // The host ejected its drive: the stick takes it back (the car's drive -> edit mode)
   if (ejectRequested) {
@@ -2552,26 +2553,30 @@ void loop() {
   }
   staAutoJoinTick();   // look for and join a remembered network
 
-  // BOOT button: short press = restart the stick, hold = random lock chime.
-  // The restart happens on release, so the button is never down while the chip
-  // resets (held down at reset, it would start the flashing mode instead).
+  // BOOT button: short press = random lock chime (then the stick restarts),
+  // held for more than 5 seconds = restart only. Both act when the button is let
+  // go, so it is never down while the chip resets (held down at reset, it would
+  // start the flashing mode instead).
   static uint32_t downAt = 0;
-  static bool longDone = false, hintShown = false;
+  static int hint = 0;
   bool down = (digitalRead(BUTTON_PIN) == LOW);
   if (down) {
-    if (downAt == 0) { downAt = millis() | 1; longDone = false; hintShown = false; }
+    if (downAt == 0) { downAt = millis() | 1; hint = 0; }
     uint32_t held = millis() - downAt;
-    if (!longDone && held >= BUTTON_LONG_MS) {
-      longDone = true;
-      if (sectorCount > 0) randomLockChime();
-      else showToast("Lock Chime", "No SD card", 3000, false);
-    } else if (!longDone && !hintShown && held >= 300) {
-      hintShown = true;
-      showBig("Button", "Let go now: restart", "HOLD", "Keep holding: random", C_CYAN, BUTTON_LONG_MS);
+    if (held >= BUTTON_LONG_MS && hint < 2) {
+      hint = 2;
+      showBig("Button", "Restart only", "LET GO", "to restart the stick", C_ORANGE, 60000);
+    } else if (held >= 1000 && hint < 1) {
+      hint = 1;
+      showBig("Button", "Let go: new chime", "HOLD", "5 s: restart only", C_CYAN, 60000);
     }
   } else if (downAt != 0) {
     uint32_t held = millis() - downAt;
     downAt = 0;
-    if (!longDone && held >= 50) restartStick();     // 50 ms: ignore contact bounce
+    if (held >= BUTTON_LONG_MS) restartStick();
+    else if (held >= 50) {                           // 50 ms: ignore contact bounce
+      if (sectorCount > 0) randomLockChime();        // restarts the stick when it worked
+      else showToast("Lock Chime", "No SD card", 3000, false);
+    }
   }
 }

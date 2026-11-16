@@ -3,6 +3,18 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.10 (2026-11-16)
+- **First Run on the screen** uses large type, and the countdown is 15 seconds
+- **First Run without a screen** no longer starts by itself: hold the BOOT button for more than 5 seconds. The
+  web page and README explain this, and to wait for the stick to appear as a USB drive before unplugging
+- **Show password** tick box when joining a Wi-Fi network on the web page
+- **Saved Wi-Fi networks are joined in every mode**, not only in edit mode
+- **Edit mode shows the sound library to a computer** on the USB port as a drive. The web page can take it back
+  (**Use the library here instead**); ejecting it on the computer does the same. Wi-Fi mode is now called edit mode
+- A set-up card is recognised by its layout, not the `CHIME_STORE` name, so renaming the library on a computer is fine
+- **The screen shows how full the sound library is** instead of the car's drive
+- **Icon buttons** on the web page (upload, new folder, play, make lock chime, rename, delete) with a legend
+
 ## 0.9 (2026-11-16)
 - **Fixed: First Run ran again after every restart, and made partitions of the wrong size.** The stick measured
   the first partition instead of the whole card, so it split that space only (half and half when it was 4 GB or

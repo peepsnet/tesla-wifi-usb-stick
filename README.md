@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.9.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.10.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -16,9 +16,9 @@ a general-purpose Wi-Fi USB drive for other devices.)
 - **Make Lock Chime** button on every `.wav`: copies it to `/LockChime.wav` (the original is kept) and
   warns you if the file doesn't look like something the car will play
 - BOOT button on the stick picks a random `.wav` (16-bit PCM, under the size limit) and makes it the lock chime
-- Can join your home Wi-Fi too: scan, enter a password, or type a hidden network name.
+- Joins your home Wi-Fi too, in every mode: scan, enter a password, or type a hidden network name.
   Up to 8 networks are remembered and can be deleted individually from the web page
-- Screen (if fitted) shows the mode, how full the car's drive is (with a bar), which Wi-Fi the address is on, and
+- Screen (if fitted) shows the mode, how full the sound library is (with a bar), which Wi-Fi the address is on, and
   the address to open ([mock-up](docs/screen-mockup.png))
 - Drive is named "Boombox" (changeable)
 - Two-part card: a 4 GB Boombox drive for the car and a hidden sound library for the stick. Any card is set up
@@ -67,7 +67,7 @@ eject and reinsert), writes the file, and returns it.
 - **Don't use the stick as your dashcam or Sentry drive.** The ESP32-S3's USB is full speed only, which is too
   slow for recording. If the car offers to **format** the drive, decline: that would erase the car's drive
   (the sound library would survive).
-- The drive disappears from the car for a moment whenever you switch between USB and Wi-Fi mode.
+- The drive disappears from the car for a moment whenever you switch between car mode and edit mode.
 - The web page has no login. Anyone who can join the stick's Wi-Fi can change the files.
 
 ## First Run and the card layout
@@ -79,10 +79,16 @@ The stick always uses the card in two parts:
 | `CHIME_STORE` (FAT32) | Everything else | The stick only. The car never sees it |
 
 **First Run:** when the stick starts with a card that doesn't have this layout (brand new, exFAT, used in a camera,
-anything), it sets the card up by itself. **This erases everything on the card, without asking.** The screen and
-the web page count down 10 seconds first; unplug the stick during the countdown to keep the card as it is. The
-format takes a few minutes on large cards, the web page shows the progress, and the stick restarts when done.
-The car is not given a drive until the card is set up.
+anything), the card is erased and set up. **This erases everything on the card.**
+
+- **Stick with a screen:** the screen and the web page count down 15 seconds, then it starts by itself. Unplug the
+  stick during the countdown to keep the card as it is.
+- **Stick without a screen:** nothing happens until you **hold the button on the stick down for more than
+  5 seconds**. The web page (`http://192.168.4.1` on the stick's Wi-Fi) says the same and shows the progress.
+
+The format takes a few minutes and the stick restarts when done. The car or computer is not given a drive until
+the card is set up, so **without a screen, plug the stick into a computer and wait until it shows up as a USB
+drive before unplugging it**: that is the sign that setup has finished.
 
 A card that is already set up is never fully erased again. If the stick can't read the card at all, it reports a
 card error instead of formatting it.
@@ -96,10 +102,21 @@ The car is shown a smaller drive that ends where `CHIME_STORE` begins, with a pa
 `Boombox`. If the car (or a PC) reformats or repartitions its drive, the stick keeps the storage partition's entry,
 so `CHIME_STORE` and its files survive. Put the card in a PC card reader and you will see both partitions.
 
+### Modes
+| | Car (USB port) sees | Web page can edit |
+|---|---|---|
+| **Car mode** (normal) | the `Boombox` drive | the sound library |
+| **Edit mode** | the sound library, as a drive for a computer | the `Boombox` drive |
+
+Each part of the card is only ever used by one side at a time; that is what keeps the files safe. In edit mode,
+plug the stick into a computer to copy sounds straight onto the library. To edit the library from the web page
+while in edit mode, eject the drive on the computer and press **Use the library here instead**. Ejecting a drive
+on the computer always makes the stick take that drive back.
+
 The stick's web page has two tabs:
 - **Sound library** (`CHIME_STORE`): your sounds. Upload, play, rename, delete and organise them at any time, even
   while the car is using its drive.
-- **Car drive** (`Boombox`): what the car sees. Only editable in Wi-Fi mode, when the stick (not the car) owns it.
+- **Car drive** (`Boombox`): what the car sees. Only editable in edit mode, when the stick (not the car) owns it.
 
 **Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
 the stick ejects it for a moment, copies the file, and gives it back. The BOOT button picks its random chime from
@@ -135,8 +152,7 @@ and the matching values at the top of `src/main.cpp`.
   caught early.
 
 ## Important notes
-- Only one side can use the car's drive at a time. In **USB mode** the car owns it; in **Wi-Fi mode** the dongle
-  owns it and the car sees the drive as ejected. The sound library is always available to the dongle.
+- Only one side can use each part of the card at a time (see Modes above).
 - The web page has no login. Anyone who can join the dongle's Wi-Fi (or your home Wi-Fi when the
   dongle is connected to it) can change the files.
 - Any microSD card works; First Run formats it (see above). Cards of 4 GB or less are split in half.

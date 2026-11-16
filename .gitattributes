@@ -1,0 +1,5 @@
+# Keep shell scripts and workflows with Unix line endings, even when the repo is
+# edited on Windows (a script with Windows line endings fails on GitHub's runners).
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.py   text eol=lf

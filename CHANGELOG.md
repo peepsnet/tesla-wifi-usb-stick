@@ -24,5 +24,6 @@ First numbered version. Everything built so far:
   drive
 
 ## Next: 0.6 (planned)
+- GitHub releases with a ready-to-flash `...-full.bin` attached (Actions, Release, Run workflow)
 - Web page keeps the sound library on `CHIME_STORE` without ejecting the car's drive; only applying a lock chime
   touches `Boombox`

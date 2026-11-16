@@ -132,15 +132,31 @@ and the matching values at the top of `src/main.cpp`.
 
 ## Releasing a new version
 1. Change `#define FW_VERSION "0.5"` near the top of `src/main.cpp` (for example to `"0.6"`).
-2. Add a section for it at the top of `CHANGELOG.md`, and update "Current version" at the top of this README.
-3. Upload the changed files to `main`. The build puts the version on the installer page as
-   `0.6 (build abc1234)`, where the last part is the commit it was built from.
-4. Optional: on GitHub, **Releases**, **Draft a new release**, tag `v0.6`, so people can find old versions.
+2. Add a `## 0.6 (date)` section at the top of `CHANGELOG.md`, and update "Current version" at the top of
+   this README.
+3. Commit and push to `main`. The web installer is rebuilt automatically and shows `0.6 (build abc1234)`.
+4. On GitHub open **Actions**, **Release**, **Run workflow**. It builds the firmware, creates the tag `v0.6`, and
+   publishes a release with the `CHANGELOG.md` notes and a ready-to-flash file attached
+   (`tesla-wifi-usb-stick-v0.6-full.bin`). It refuses to run if `v0.6` already exists, so you can't release the
+   same version twice by accident. (Pushing a tag `v0.6` from your computer does the same.)
 
-## How the web installer is built
-`.github/workflows/build-and-deploy.yml` builds the firmware on GitHub every time you push to
-`main`, merges the pieces into one `firmware.bin`, and publishes it with `site/index.html`
-(using [ESP Web Tools](https://esphome.github.io/esp-web-tools/)) to GitHub Pages.
+## Flashing a release file
+Each [release](https://github.com/peepsnet/tesla-wifi-usb-stick/releases) has a `...-full.bin` attached. It holds
+everything (bootloader, partition table, app) and goes at address **0x0**. It uses the default settings; use the
+web installer instead if you want your own Wi-Fi name and password.
 
-If a flashed dongle doesn't boot, try changing `--flash_mode dio` to `--flash_mode qio` in that
-workflow file.
+1. Hold the button on the dongle while plugging it in.
+2. Open [esptool-js](https://espressif.github.io/esptool-js/) in Chrome or Edge, click **Connect**, pick the dongle.
+3. Flash address `0x0`, choose the `.bin`, click **Program**. Then unplug and re-plug without holding the button.
+
+Command line: `esptool.py --chip esp32s3 write_flash 0x0 tesla-wifi-usb-stick-v0.6-full.bin`
+
+## How the web installer and releases are built
+Both workflows call `tools/build-merged.sh`, which builds with PlatformIO and merges everything into one image.
+`.github/workflows/build-and-deploy.yml` publishes the web installer to GitHub Pages on every push to `main`;
+`.github/workflows/release.yml` makes the GitHub releases (see above).
+
+The installer page uses [ESP Web Tools](https://esphome.github.io/esp-web-tools/).
+
+If a flashed dongle doesn't boot, try changing `--flash_mode dio` to `--flash_mode qio` in
+`tools/build-merged.sh`.

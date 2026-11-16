@@ -38,31 +38,8 @@ jobs:
       - name: Install PlatformIO and esptool
         run: pip install platformio "esptool==4.8.1"
 
-      - name: Build the firmware
-        run: pio run
-
-      - name: List build output
-        run: ls -la .pio/build/t-dongle-s3
-
-      - name: Merge into one flashable image
-        run: |
-          BOOT_APP0=$(find ~/.platformio -name boot_app0.bin | head -n 1)
-          if [ -z "$BOOT_APP0" ]; then echo "boot_app0.bin not found"; exit 1; fi
-          mkdir -p _site
-          esptool.py --chip esp32s3 merge_bin \
-            --flash_mode dio --flash_freq 80m --flash_size 16MB \
-            -o _site/firmware.bin \
-            0x0     .pio/build/t-dongle-s3/bootloader.bin \
-            0x8000  .pio/build/t-dongle-s3/partitions.bin \
-            0xe000  "$BOOT_APP0" \
-            0x10000 .pio/build/t-dongle-s3/firmware.bin
-          ls -la _site/firmware.bin
-          python3 - <<'PY'
-          d = open("_site/firmware.bin", "rb").read()
-          assert len(d) > 0xE000, "firmware.bin is too small"
-          assert set(d[0xD000:0xE000]) == {0xFF}, "cfg area is not blank - check partitions.csv"
-          print("cfg area is blank, OK")
-          PY
+      - name: Build the firmware and merge it into one flashable image
+        run: bash tools/build-merged.sh _site/firmware.bin
 
       - name: Assemble the web page
         run: |

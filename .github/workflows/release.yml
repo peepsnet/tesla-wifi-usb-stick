@@ -1,0 +1,77 @@
+# Makes a GitHub release with a ready-to-flash firmware file attached.
+#
+# Two ways to start it:
+#   - Actions tab -> "Release" -> "Run workflow": releases the version in
+#     src/main.cpp (FW_VERSION) as tag v<version>, e.g. v0.5.
+#   - Pushing a tag such as v0.6 (it must match FW_VERSION).
+# The release notes come from that version's section in CHANGELOG.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: ver
+        run: |
+          VER=$(grep -oP '#define FW_VERSION "\K[^"]+' src/main.cpp)
+          if [ -z "$VER" ]; then echo "::error::FW_VERSION not found in src/main.cpp"; exit 1; fi
+          TAG="v$VER"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match FW_VERSION \"$VER\" in src/main.cpp"; exit 1
+            fi
+          elif git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Release $TAG already exists. Change FW_VERSION in src/main.cpp (and CHANGELOG.md) first."; exit 1
+          fi
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=tesla-wifi-usb-stick-$TAG-full.bin" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes
+        run: |
+          mkdir -p dist
+          python3 tools/release-notes.py "${{ steps.ver.outputs.ver }}" "${{ steps.ver.outputs.asset }}" > dist/notes.md
+          cat dist/notes.md
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO and esptool
+        run: pip install platformio "esptool==4.8.1"
+
+      - name: Build the flashable image
+        run: bash tools/build-merged.sh "dist/${{ steps.ver.outputs.asset }}"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Tesla Wi-Fi USB Stick ${{ steps.ver.outputs.tag }}
+          body_path: dist/notes.md
+          files: dist/${{ steps.ver.outputs.asset }}
+          fail_on_unmatched_files: true

@@ -3,6 +3,12 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.18 (2026-11-17)
+- **Random chime button** on the Sounds tab: does what a short press of the stick's button does (picks a random sound from
+  the categories marked Random, makes it the lock chime and restarts the stick) and tells you which sound it picked. Asks
+  for confirmation first
+- **Enter key:** pressing Enter in the edit-sound dialog saves it, and Enter in the Wi-Fi name/password boxes connects
+
 ## 0.17 (2026-11-17)
 - **Categories stand out** on the Sounds tab: each one is a card with a solid coloured header bar (blue, grey for
   UnCategorized), a count badge and a fold arrow, and its sounds are indented on white underneath

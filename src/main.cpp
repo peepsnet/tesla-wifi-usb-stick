@@ -76,7 +76,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.17"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.18"               // bump for every release (also listed in CHANGELOG.md)
 #define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
 // Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
 // fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.
@@ -1840,6 +1840,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  .bb:hover{color:#fff;background:#6c757d}
  .bb-primary{color:#fff;background:#0d6efd;border-color:#0d6efd}
  .bb-primary:hover{background:#0b5ed7;border-color:#0a58ca}
+ .bb-success{color:#fff;background:#198754;border-color:#198754}
+ .bb-success:hover{background:#157347;border-color:#146c43}
  /* a category is a card: a solid coloured header bar, with its sounds on white underneath */
  #cats details.cat{padding:0;overflow:hidden;border:1px solid #0d6efd;border-radius:.5rem;margin-bottom:1.1rem;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.15)}
  #cats details.cat.un{border-color:#6c757d}
@@ -1921,7 +1923,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   <li>Upload .wav files to the <b>Sound library</b> (any folder). You can add, play and organise them any time, even while the car is using its drive. Press <b>Play</b> to listen first.</li>
   <li>Press <b>Make Lock Chime</b> on the one you want. It is copied to /LockChime.wav on the car drive and the original stays in the library. The page warns you if the file doesn't look right.</li>
   <li>The stick then <b>restarts</b>, because the car only reads the new sound when the stick looks unplugged and plugged in again. The screen shows each step. Your phone may drop off the stick's Wi-Fi for a few seconds.</li>
-  <li><b>Button on the stick:</b> a short press makes a random 16-bit PCM .wav (under the size limit) from the categories marked <b>Random</b> on the Sounds tab the lock chime, then restarts. Holding it for more than 5 seconds only restarts the stick.</li>
+  <li><b>Button on the stick:</b> a short press makes a random 16-bit PCM .wav (under the size limit) from the categories marked <b>Random</b> on the Sounds tab the lock chime, then restarts. The <b>Random chime</b> button on the Sounds tab does the same. Holding it for more than 5 seconds only restarts the stick.</li>
  </ul>
  <h4>If the car still plays the old sound</h4>
  <ul>
@@ -2072,7 +2074,10 @@ function catsDraw(){
  const box=$('#cats');box.innerHTML='';
  const top=document.createElement('div');
  const nb=document.createElement('button');nb.className='bb bb-primary';nb.textContent='New category';nb.onclick=newCat;
- top.appendChild(nb);box.appendChild(top);
+ top.appendChild(nb);
+ const rb=document.createElement('button');rb.className='bb bb-success';rb.textContent='Random chime';
+ rb.title='Pick a random sound from the categories marked Random, like the button on the stick';rb.onclick=randomChime;
+ top.appendChild(rb);box.appendChild(top);
  const sum=document.createElement('div');box.appendChild(sum);
  const sumUpd=()=>{const n=randomCount();sum.className='sum'+(n?'':' bad');
   sum.textContent=n?'The stick\'s button picks a random chime from the '+n+' sound'+(n==1?'':'s')+' in the categories marked Random.'
@@ -2116,6 +2121,12 @@ function catsDraw(){
   d.appendChild(t);box.appendChild(d);
  }
 }
+async function randomChime(){
+ if(!randomCount()){alert('No sound is in a category marked Random. Tick Random on at least one category first.');return}
+ if(!confirm('Pick a random sound from the categories marked Random and make it the lock chime?\n\nThis does what a short press of the stick\'s button does: the stick restarts afterwards so the car reads the new sound.'))return;
+ stopPlay();msg('Picking...');
+ try{const r=await api('/random',{method:'POST'});afterChime(await r.text())}catch(e){msg(e.message)}
+}
 async function newCat(){
  const n=prompt('Category name (for example Christmas Sounds)');if(!n)return;
  try{await postForm('/lib/cat/add',{name:n});catsLoad()}catch(e){msg(e.message)}
@@ -2138,6 +2149,9 @@ function fileNameProblem(f){
  if(!/^[A-Za-z0-9 _.()&'#-]+$/.test(b))return 'The file name can only use letters, numbers, spaces and _ - . ( ) & \' #';
  return '';
 }
+// Enter saves the edit dialog (Escape closes it by itself) and joins a Wi-Fi network from its text boxes.
+$('#edlg').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.tagName!=='BUTTON'){e.preventDefault();$('#edsave').click()}});
+for(const id of ['#ssid','#pass'])$(id).addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#wconn').click()}});
 function editSound(s){
  const cur=s.f.replace(/^.*\//,'');
  $('#edname').value=s.n;$('#edfile').value=cur;$('#ederr').textContent='';
@@ -3076,21 +3090,28 @@ static void pickRandomFromLibrary(const String& skip, String& chosen, uint32_t& 
   }
 }
 
-void randomLockChime() {
+// Picks a random sound from the Random categories and makes it the lock chime (the stick then restarts). Used by the
+// stick's button and by the web page. Returns "" when it worked, otherwise what went wrong (also shown on the screen).
+// *picked gets the display name of the chosen sound.
+String randomLockChime(String* picked = nullptr) {
+  String err;
   if (hostView == HOST_STORE) {
-    showToast("Lock Chime", "The computer is using the sound library", 3000, false);
-    return;
+    err = "The computer is using the sound library";
+    showToast("Lock Chime", err, 3000, false);
+    return err;
   }
   if (!storeMounted) {
-    showToast("Lock Chime", "No sound library on the card", 3000, false);
-    return;
+    err = "No sound library on the card";
+    showToast("Lock Chime", err, 3000, false);
+    return err;
   }
   libLoad();
   bool anyCategory = libCats[0].rand;
   for (int i = 1; i <= MAX_CATS; i++) if (libCats[i].used && libCats[i].rand) anyCategory = true;
   if (!anyCategory) {
-    showToast("Chime failed", "No category is marked Random", 4000, false);
-    return;
+    err = "No category is marked Random";
+    showToast("Chime failed", err, 4000, false);
+    return err;
   }
   showBig("Lock Chime", "Picking a sound", "PICK", "from the Random categories", C_CYAN, 30000);
   String chosen;
@@ -3098,10 +3119,28 @@ void randomLockChime() {
   pickRandomFromLibrary(lastChime, chosen, count);   // first try: anything except last time's pick
   if (count == 0) pickRandomFromLibrary("", chosen, count);   // only one candidate: allow a repeat
   if (count == 0) {
-    showToast("Chime failed", "No suitable .wav files in the Random categories", 4000, false);
-    return;
+    err = "No suitable .wav files in the Random categories";
+    showToast("Chime failed", err, 4000, false);
+    return err;
   }
-  if (applyLockChime(STORE, chosen, false).length() == 0) lastChime = chosen;
+  err = applyLockChime(STORE, chosen, false);
+  if (err.length() == 0) {
+    lastChime = chosen;
+    if (picked) {
+      int k = libFind(chosen);
+      *picked = k >= 0 ? libSounds[k].name : chosen.substring(chosen.lastIndexOf('/') + 1);
+    }
+  }
+  return err;
+}
+
+// POST /random: the web page's "Random chime" button.
+void handleRandomChime() {
+  if (!requireStore()) return;
+  String name;
+  String err = randomLockChime(&name);
+  if (err.length()) { server.send(409, "text/plain", err); return; }
+  server.send(200, "text/plain", name);
 }
 
 // Restart, after letting go of the card and the USB drive cleanly. To the car this looks like unplugging the stick and
@@ -3588,6 +3627,7 @@ void setup() {
   server.on("/mode", HTTP_POST, BUSY_GUARD(handleMode));
   server.on("/store/take", HTTP_POST, BUSY_GUARD(handleStoreTake));
   server.on("/reboot", HTTP_POST, BUSY_GUARD(handleReboot));
+  server.on("/random", HTTP_POST, BUSY_GUARD(handleRandomChime));
   server.on("/wifi/scan", HTTP_POST, BUSY_GUARD(handleWifiScan));
   server.on("/api/wifi/networks", HTTP_GET, handleWifiNetworks);
   server.on("/api/wifi/status", HTTP_GET, handleWifiStatus);

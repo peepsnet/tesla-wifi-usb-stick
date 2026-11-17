@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.17.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.18.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -187,7 +187,7 @@ UnCategorized         Christmas Sounds        Halloween Sounds
   The pencil on a sound edits both, and which categories it is in. The file name is restricted to what is safe: letters,
   numbers, spaces and `_ - . ( ) & ' #`, up to 64 characters, ending in `.wav`. Uploads get unsupported characters
   replaced with `_`.
-- **Random** (tick box on each category, including UnCategorized): the stick's button picks its random lock chime only
+- **Random** (tick box on each category, including UnCategorized), and the **Random chime** button on the page: both pick its random lock chime only
   from the sounds in ticked categories (still only 16-bit PCM files under the size limit). Use it for themes: tick
   *Christmas Sounds* in December and untick the rest. If nothing is ticked, the screen says so and nothing changes.
 - **Library files** is the old folder view of CHIME_STORE. Renaming or deleting there keeps the categories in step.

@@ -76,7 +76,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.16"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.17"               // bump for every release (also listed in CHANGELOG.md)
 #define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
 // Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
 // fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.
@@ -1840,12 +1840,27 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  .bb:hover{color:#fff;background:#6c757d}
  .bb-primary{color:#fff;background:#0d6efd;border-color:#0d6efd}
  .bb-primary:hover{background:#0b5ed7;border-color:#0a58ca}
- #cats details.cat{padding:.4rem .75rem;margin-bottom:.6rem}
- #cats summary{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+ /* a category is a card: a solid coloured header bar, with its sounds on white underneath */
+ #cats details.cat{padding:0;overflow:hidden;border:1px solid #0d6efd;border-radius:.5rem;margin-bottom:1.1rem;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+ #cats details.cat.un{border-color:#6c757d}
+ #cats details.cat[open]>summary{margin-bottom:0}
+ #cats summary{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;list-style:none;background:#0d6efd;color:#fff;padding:.6rem .75rem;font-size:1.1rem;font-weight:600}
+ #cats details.un>summary{background:#6c757d}
+ #cats summary::-webkit-details-marker{display:none}
+ #cats summary::before{content:"\25BE";font-size:.9rem}
+ #cats details.cat:not([open])>summary::before{content:"\25B8"}
  #cats .cn{flex:1;min-width:8rem}
- #cats .cc{font-size:.8rem;color:#6c757d;font-weight:400}
+ #cats .cc{display:inline-block;margin-left:.35rem;padding:.05rem .55rem;border-radius:1rem;background:rgba(255,255,255,.28);font-size:.8rem;font-weight:600;vertical-align:middle}
  #cats .rnd{font-size:.85rem;font-weight:400;white-space:nowrap;cursor:pointer}
- #cats td.nm{word-break:normal}
+ #cats summary button.ib{color:#fff;background:transparent;border-color:rgba(255,255,255,.75);padding:.15rem .3rem;margin:0}
+ #cats summary{gap:.4rem;font-size:1.05rem}
+ #cats .cc{white-space:nowrap}
+ #cats summary button.ib:hover{background:rgba(255,255,255,.25)}
+ #cats details.cat>table,#cats details.cat>.sm{width:calc(100% - 1.5rem);margin:.3rem .75rem .5rem}
+ #cats details.cat>.sm{padding:.3rem 0}
+ #cats table tr:last-child td{border-bottom:0}
+ #cats td.nm{word-break:normal;padding-left:.6rem;border-left:3px solid #cfe2ff;font-size:.95rem;font-weight:400}
+ #cats details.un td.nm{border-left-color:#dee2e6}
  #cats td.nm .fn{font-size:.78rem;color:#6c757d;word-break:break-all}
  #cats .sum{font-size:.9rem;margin:.5rem 0}
  #cats .sum.bad{color:#b02a37}
@@ -2066,7 +2081,7 @@ function catsDraw(){
  const cats=[lib.cats[0]].concat(lib.cats.slice(1).sort((a,b)=>a.n.localeCompare(b.n)));
  for(const c of cats){
   const items=lib.sounds.filter(s=>c.i===0?s.c===0:bit(s.c,c.i)).sort((a,b)=>a.n.localeCompare(b.n));
-  const d=document.createElement('details');d.className='cat';d.open=true;
+  const d=document.createElement('details');d.className='cat'+(c.i===0?' un':'');d.open=true;
   const sm=document.createElement('summary');
   const nm=document.createElement('span');nm.className='cn';nm.textContent=c.n+' ';
   const cc=document.createElement('span');cc.className='cc';cc.textContent='('+items.length+')';nm.appendChild(cc);

@@ -76,7 +76,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.18"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.19"               // bump for every release (also listed in CHANGELOG.md)
 #define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
 // Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
 // fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.
@@ -1821,11 +1821,17 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tools button.ib{color:#0d6efd;background:transparent;border-color:#0d6efd;padding:.25rem .5rem}
  #tools button.ib:hover{color:#fff;background:#0d6efd}
  #toggle:disabled,#scan:disabled,#wconn:disabled,#updcheck:disabled,#updgo:disabled,#updfilego:disabled,#rebuild:disabled,#take:disabled{opacity:.65;cursor:default}
- #tabs{gap:0;margin:12px 0 4px}
- #tabs button{flex:1;margin:0;border-radius:0}
- #tabs button:first-child{border-radius:.375rem 0 0 .375rem}
+ #tabs{gap:0;margin:14px 0 0}
+ #tabs button{flex:1;margin:0;border-radius:0;font-size:1.05rem}
+ #tabs button:first-child{border-radius:.375rem 0 0 0}
  #tabs button+button{margin-left:-1px}
- #tabs button:last-child{border-radius:0 .375rem .375rem 0}
+ #tabs button:last-child{border-radius:0 .375rem 0 0}
+ #panel{border:1px solid #dee2e6;border-radius:0 0 .375rem .375rem;padding:.5rem .75rem .75rem;margin-bottom:1rem}
+ #panel #card{margin-top:1rem}
+ #subtabs{display:flex;gap:.4rem;margin:.2rem 0 .4rem}
+ #subtabs button{margin:0;padding:.25rem .9rem;font-size:.95rem;border:1px solid #0d6efd;border-radius:2rem;color:#0d6efd;background:#fff;cursor:pointer}
+ #subtabs button:hover{background:#e7f1ff}
+ #subtabs button.on{color:#fff;background:#0d6efd}
  #tabs button{font-weight:400}
  #bar{padding:1rem;border:1px solid #9ec5fe;border-radius:.375rem;background:#cfe2ff;color:#052c65;margin-bottom:1rem}
  #bar.usb{background:#fff3cd;border-color:#ffe69c;color:#664d03}
@@ -1878,7 +1884,6 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small>
  <a id="updi" href="#upd" hidden title="A firmware update is available" aria-label="A firmware update is available"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 5l5 5h-3.5v5h-3v-5H7z"/></svg></a></h2>
 <div id="host"></div>
-<div id="bar"><span id="mode"></span><br><button id="toggle"></button><button id="reboot" title="Restart the stick (it starts in Car Mode)">Restart stick</button><div id="modehelp"></div></div>
 <details id="wifi"><summary>Wi-Fi network (join your router)</summary>
  <div id="wst"></div>
  <div id="wsaved"></div>
@@ -1901,10 +1906,6 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <p class="sm">No internet? Download the file ending in <code>-app.bin</code> from the project's GitHub releases page on a device that has internet, then pick it here:</p>
  <input type="file" id="updfile" accept=".bin">
  <button id="updfilego">Install this file</button>
-</details>
-<details id="card"><summary>Car drive tools</summary>
- <p class="sm">If the car's drive is damaged or the car stops reading it, you can erase and re-create it. Only the 4 GB "Boombox" drive is erased; your sound library is kept and the last lock chime is put back. The car sees its drive disappear for about a minute.</p>
- <button id="rebuild">Erase and re-create the Boombox drive</button>
 </details>
 <details id="tesla"><summary>Tesla lock chime guide</summary>
  <h4>What the car needs</h4>
@@ -1933,7 +1934,10 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  </ul>
  <p class="sm">Do not use this stick as the car's dashcam or Sentry drive: its USB is full speed only, and if the car offers to format the drive, say no (the stick's sound library would survive, but the car drive's contents would not). Software and models differ, and reports from owners don't always agree, so your owner's manual is the final word.</p>
 </details>
-<div id="tabs"><button id="tlib">Sounds</button><button id="tfiles">Library files</button><button id="tcar">Car drive</button></div>
+<div id="bar"><span id="mode"></span><br><button id="toggle"></button><button id="reboot" title="Restart the stick (it starts in Car Mode)">Restart stick</button><div id="modehelp"></div></div>
+<div id="tabs"><button id="tcm">Car Mode</button><button id="tpm">PC Mode</button></div>
+<div id="panel">
+<div id="subtabs"><button id="tlib">Sounds</button><button id="tfiles">Library files</button></div>
 <div id="volinfo"></div>
 <button id="take" style="display:none">Use the library here instead (eject it on the computer first)</button>
 <div id="tools">
@@ -1955,6 +1959,11 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <div><button type="button" class="bb bb-primary" id="edsave">Save</button><button type="button" class="bb" id="edcancel">Cancel</button></div>
 </dialog>
 <div id="legend"></div>
+<details id="card"><summary>Car drive tools</summary>
+ <p class="sm">If the car's drive is damaged or the car stops reading it, you can erase and re-create it. Only the 4 GB "Boombox" drive is erased; your sound library is kept and the last lock chime is put back. The car sees its drive disappear for about a minute.</p>
+ <button id="rebuild">Erase and re-create the Boombox drive</button>
+</details>
+</div>
 <script>
 let dir='/',usb=false,pcLib=false,vol='car',hasStore=false,dirs={store:'/',car:'/'},lview='cats',lib=null;
 const IC={
@@ -1984,7 +1993,7 @@ async function load(){
  usb=!!st.usb;pcLib=!!st.pcLib;
  if(pcLib&&!wasPc&&vol==='store'){vol='car';dir=dirs.car}
  const hs=!!st.store||pcLib;
- if(hs!==hasStore){hasStore=hs;vol=hasStore&&!pcLib?'store':'car';dir=dirs[vol]}
+ if(hs!==hasStore){hasStore=hs;vol=hasStore&&usb?'store':'car';dir=dirs[vol]}
  $('#bar').className=usb?'usb':'';
  $('#mode').textContent=st.problem?'Card problem: '+st.problem+'.':usb
   ?'Car Mode: Boombox is exposed to the car, CHIME_STORE is hidden.'+(hasStore?' You can still edit CHIME_STORE here.':' Editing is disabled.')
@@ -1996,9 +2005,12 @@ async function load(){
  $('#modehelp').textContent=usb?'PC Mode hides Boombox and shows CHIME_STORE to a computer on the USB port. You can then edit Boombox here.':'Car Mode gives Boombox back to the car and hides CHIME_STORE. The stick always starts in Car Mode.';
  $('#tabs').style.display=hasStore?'':'none';
  const catsView=vol==='store'&&lview==='cats';
+ $('#tcm').className=vol==='store'?'on':'';
+ $('#tpm').className=vol==='car'?'on':'';
+ $('#subtabs').style.display=vol==='store'&&hasStore?'':'none';
  $('#tlib').className=catsView?'on':'';
  $('#tfiles').className=vol==='store'&&!catsView?'on':'';
- $('#tcar').className=vol==='car'?'on':'';
+ $('#card').style.display=vol==='car'?'':'none';       // re-creating the Boombox drive belongs to the PC Mode tab
  const editable=vol==='store'?!pcLib:!usb;
  $('#take').style.display=vol==='store'&&pcLib?'':'none';
  $('#volinfo').textContent=!hasStore?'':vol==='store'
@@ -2182,7 +2194,8 @@ function afterChime(n){
 }
 $('#tlib').onclick=()=>{vol='store';lview='cats';load()};
 $('#tfiles').onclick=()=>{vol='store';lview='files';dir=dirs.store;load()};
-$('#tcar').onclick=()=>{vol='car';dir=dirs.car;load()};
+$('#tcm').onclick=()=>{vol='store';load()};
+$('#tpm').onclick=()=>{vol='car';dir=dirs.car;load()};
 $('#reboot').onclick=async()=>{
  if(!confirm('Restart the stick?\n\nThe car sees it unplugged and plugged in again, and the stick starts in Car Mode. This page comes back by itself.'))return;
  try{await api('/reboot',{method:'POST'})}catch(e){msg(e.message);return}
@@ -2193,7 +2206,8 @@ $('#reboot').onclick=async()=>{
 };
 $('#toggle').onclick=async()=>{
  msg('Switching...');
- try{await api('/mode?usb='+(usb?0:1),{method:'POST'})}catch(e){msg(e.message)}
+ const toPc=usb;
+ try{await api('/mode?usb='+(usb?0:1),{method:'POST'});vol=toPc||!hasStore?'car':'store';dir=dirs[vol]}catch(e){msg(e.message)}   // show the tab of the mode we just entered
  load();
 };
 $('#take').onclick=async()=>{

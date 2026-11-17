@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.18.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.19.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -56,7 +56,7 @@ as the final word. These are the requirements that most guides agree on:
 
 ### Changing the chime with this stick
 1. Join the stick's Wi-Fi and open `http://192.168.4.1`.
-2. Upload `.wav` files to the **Sound library**, press **Play** to listen, then **Make Lock Chime** on the one
+2. Upload `.wav` files on the **Car Mode** tab (**Sounds**), press **Play** to listen, then **Make Lock Chime** on the one
    you want. The page shows its format and warns about anything unusual (not PCM, not 16-bit, too big, very long).
 3. Lock the car and listen. Or **press the stick's button** for a random one from the categories marked **Random**.
 
@@ -124,10 +124,14 @@ plug the stick into a computer to copy sounds straight onto the library. To edit
 while in PC Mode, eject the drive on the computer and press **Use the library here instead**. Ejecting a drive
 on the computer always makes the stick take that drive back.
 
-The stick's web page has two tabs:
-- **Sound library** (`CHIME_STORE`): your sounds. Upload, play, rename, delete and organise them at any time, even
-  while the car is using its drive.
-- **Car drive** (`Boombox`): what the car sees. Only editable in PC Mode, when the stick (not the car) owns it.
+Below the Tesla guide, the stick's web page has a mode section: the **Switch to PC Mode / Car Mode** and **Restart
+stick** buttons, and two tabs, one for each mode. The page opens on the tab of the mode the stick is in, and the switch
+button takes you to the tab of the mode you switch to.
+- **Car Mode** tab (`CHIME_STORE`, the storage partition): everything for your sounds. **Sounds** (categories) and
+  **Library files** sub-tabs: upload, play, rename, delete and organise them at any time, even while the car is using
+  its drive.
+- **PC Mode** tab (`Boombox`, the car's partition): the files on the car's drive, and **Car drive tools** (erase and
+  re-create the Boombox drive). The files are only editable in PC Mode, when the stick (not the car) owns the drive.
 
 **Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
 the stick takes it away, copies the file and restarts.
@@ -171,7 +175,7 @@ you would use **Install firmware**). The Wi-Fi update needs a working Wi-Fi link
 the old firmware keeps running, because the new one is only switched to at the very end.
 
 ## Sound categories
-The **Sounds** tab of the web page shows your library grouped by category, for example:
+The **Sounds** sub-tab of the **Car Mode** tab of the web page shows your library grouped by category, for example:
 
 ```
 UnCategorized         Christmas Sounds        Halloween Sounds
@@ -190,7 +194,7 @@ UnCategorized         Christmas Sounds        Halloween Sounds
 - **Random** (tick box on each category, including UnCategorized), and the **Random chime** button on the page: both pick its random lock chime only
   from the sounds in ticked categories (still only 16-bit PCM files under the size limit). Use it for themes: tick
   *Christmas Sounds* in December and untick the rest. If nothing is ticked, the screen says so and nothing changes.
-- **Library files** is the old folder view of CHIME_STORE. Renaming or deleting there keeps the categories in step.
+- **Library files** (next to Sounds) is the old folder view of CHIME_STORE. Renaming or deleting there keeps the categories in step.
 
 How it is stored: one small hidden text file, `.sounds.db`, in the root of CHIME_STORE (it is written to a temporary file
 first, so a power cut can't lose it). Firmware updates don't touch it. If you delete it, the sounds stay and simply go

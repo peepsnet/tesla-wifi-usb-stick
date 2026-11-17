@@ -3,6 +3,14 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.19 (2026-11-17)
+- **Mode section moved below the Tesla lock chime guide** and turned into two tabs. The **Switch to PC Mode / Car Mode**
+  and **Restart stick** buttons sit above them
+- **Car Mode tab:** everything for the storage partition (CHIME_STORE): the **Sounds** and **Library files** sub-tabs
+- **PC Mode tab:** everything for the Boombox partition: the car drive's files and **Car drive tools** (moved here from
+  the top of the page)
+- The page opens on the tab of the mode the stick is in, and **Switch** takes you to the tab of the mode you switch to
+
 ## 0.18 (2026-11-17)
 - **Random chime button** on the Sounds tab: does what a short press of the stick's button does (picks a random sound from
   the categories marked Random, makes it the lock chime and restarts the stick) and tells you which sound it picked. Asks

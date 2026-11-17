@@ -19,6 +19,15 @@ start-up, at the top of the stick's web page, and on the installer page.
 - **Web installer: Update button** that flashes only the app (and resets the boot slot), so settings, saved
   networks and the card are kept. Use it once to get from 0.12 or older to 0.13; after that updates can
   happen over Wi-Fi
+- **Mode names:** *Car Mode* (Boombox exposed to the car, CHIME_STORE hidden) and *PC Mode* (Boombox hidden,
+  CHIME_STORE exposed to a computer). They replace "car mode" / "edit mode" on the web page, the screen and in the
+  docs. The stick still always starts in Car Mode
+- **Web page buttons** have a Bootstrap-like look (blue, green, red, outline, joined tabs, alert-style mode box).
+  The CSS is built into the page because the stick has no internet to load Bootstrap from. The icon buttons in the
+  file rows are unchanged
+- **Fixed: "Hidden / not listed" now only saves the network** (name, password, marked hidden). It no longer tries to
+  connect at once; the stick joins it automatically when it is in range. The "not found, try connecting anyway?"
+  prompt still connects
 - Every build now also publishes `latest.json` and `firmware-app.bin` on the GitHub Pages site (which is where
   sticks look), and each release has a `...-app.bin` next to the `...-full.bin`
 

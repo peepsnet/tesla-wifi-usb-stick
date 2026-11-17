@@ -76,7 +76,7 @@ stick's Wi-Fi for a few seconds while it restarts.
 - **Don't use the stick as your dashcam or Sentry drive.** The ESP32-S3's USB is full speed only, which is too
   slow for recording. If the car offers to **format** the drive, decline: that would erase the car's drive
   (the sound library would survive).
-- The drive disappears from the car for a moment whenever you switch between car mode and edit mode.
+- The drive disappears from the car for a moment whenever you switch between Car Mode and PC Mode.
 - The web page has no login. Anyone who can join the stick's Wi-Fi can change the files.
 
 ## First Run and the card layout
@@ -114,18 +114,18 @@ so `CHIME_STORE` and its files survive. Put the card in a PC card reader and you
 ### Modes
 | | Car (USB port) sees | Web page can edit |
 |---|---|---|
-| **Car mode** (normal) | the `Boombox` drive | the sound library |
-| **Edit mode** | the sound library, as a drive for a computer | the `Boombox` drive |
+| **Car Mode** (normal, and always how the stick starts) | the `Boombox` drive. `CHIME_STORE` is hidden | the sound library |
+| **PC Mode** | the sound library (`CHIME_STORE`), as a drive for a computer. `Boombox` is hidden | the `Boombox` drive |
 
-Each part of the card is only ever used by one side at a time; that is what keeps the files safe. In edit mode,
+Each part of the card is only ever used by one side at a time; that is what keeps the files safe. In PC Mode,
 plug the stick into a computer to copy sounds straight onto the library. To edit the library from the web page
-while in edit mode, eject the drive on the computer and press **Use the library here instead**. Ejecting a drive
+while in PC Mode, eject the drive on the computer and press **Use the library here instead**. Ejecting a drive
 on the computer always makes the stick take that drive back.
 
 The stick's web page has two tabs:
 - **Sound library** (`CHIME_STORE`): your sounds. Upload, play, rename, delete and organise them at any time, even
   while the car is using its drive.
-- **Car drive** (`Boombox`): what the car sees. Only editable in edit mode, when the stick (not the car) owns it.
+- **Car drive** (`Boombox`): what the car sees. Only editable in PC Mode, when the stick (not the car) owns it.
 
 **Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
 the stick takes it away, copies the file and restarts.

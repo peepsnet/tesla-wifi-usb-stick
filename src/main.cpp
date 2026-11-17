@@ -15,7 +15,7 @@
  * file system gets corrupted. So the stick has two modes:
  *
  *   USB mode  - the car has the Boombox drive; the stick has the library.
- *   Edit mode - the stick has the Boombox drive; a computer on the USB port
+ *   PC Mode   - the stick has the Boombox drive (hidden); a computer on the USB port
  *               is shown the library as a drive (the web page can take it back).
  *
  * Switch modes with the web page button. Ejecting a drive on the host makes
@@ -153,10 +153,10 @@ LGFX* lcdPtr = nullptr;     // created in displayInit(), after the settings are 
 USBMSC msc;
 WebServer server(80);
 SemaphoreHandle_t sdLock;
-volatile bool usbMode = false;        // true: the car has its drive. false: edit mode, the stick has it
+volatile bool usbMode = false;        // true: the car has its drive. false: PC Mode, the stick has it
 // What the USB host (car or computer) is shown right now:
 //   HOST_CAR    the Boombox drive (always and only in USB mode)
-//   HOST_STORE  the sound library, as a drive for a computer (edit mode, when chosen)
+//   HOST_STORE  the sound library, as a drive for a computer (PC Mode, when chosen)
 //   HOST_NONE   nothing: the drive looks ejected
 enum HostView { HOST_NONE, HOST_CAR, HOST_STORE };
 volatile HostView hostView = HOST_NONE;
@@ -499,7 +499,7 @@ static bool writeFat32(const Fat32Plan& p, const char* label, uint32_t volId, ui
   return cardWrite(p.start, s);
 }
 
-// ---- What a computer sees in edit mode: the sound library only ----
+// ---- What a computer sees in PC Mode: the sound library only ----
 // The whole card is shown, with a partition table that lists just the storage
 // partition (at its real position, so nothing in its file system has to change).
 // Everything outside that partition reads as empty and ignores writes, so the
@@ -870,7 +870,7 @@ static int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufs
   bool ok = v != HOST_NONE;
   uint8_t* p = (uint8_t*)buffer;
   for (uint32_t i = 0; i < bufsize / 512 && ok; i++) {
-    // the car only sees its own part of the card; a computer in edit mode only the library
+    // the car only sees its own part of the card; a computer in PC Mode only the library
     ok = v == HOST_CAR ? hostRead(lba + i, p + i * 512) : storeHostRead(lba + i, p + i * 512);
   }
   xSemaphoreGive(sdLock);
@@ -1150,7 +1150,7 @@ void displayUpdate() {
 
   // 160 x 80 layout:
   //   [ Tesla WiFi USB Stick   v0.8 ]   header bar: orange while the car (USB host)
-  //     42% used           of 55GB       is using the drive, cyan in edit mode
+  //     42% used           of 55GB       is using the drive, cyan in PC Mode
   //   [#########.................. ]   how full the sound library is
   //     CAR HAS DRIVE     STICK WIFI     mode, and which network the address is on
   //            192.168.4.1
@@ -1251,7 +1251,7 @@ void displayUpdate() {
   // Mode and network (small), then the address to open (large)
   lcdPtr->setFont(&fonts::Font0);
   lcdPtr->setTextColor(titleColor, C_BLACK);
-  text(usbMode ? "CAR HAS DRIVE" : "EDIT MODE", 4, 50);
+  text(usbMode ? "CAR MODE" : "PC MODE", 4, 50);
   lcdPtr->setTextColor(C_GREY, C_BLACK);
   right(joined ? "HOME WIFI" : "STICK WIFI", 50);
   lcdPtr->setFont(&fonts::Font2);
@@ -1322,7 +1322,7 @@ void giveStoreToHost() {
 }
 
 // USB mode: the car has the Boombox drive and the stick has the library.
-// Edit mode: the stick has the Boombox drive (the host sees nothing, until the
+// PC Mode: the stick has the Boombox drive (the host sees nothing, until the
 // library is lent to it with giveStoreToHost()).
 void setUsbMode(bool on) {
   if (on) takeStoreBack();
@@ -1373,7 +1373,7 @@ String safePath(String p) {
 
 bool requireWifiMode() {
   if (usbMode) {
-    server.send(423, "text/plain", "The car has this drive. Switch to edit mode first.");
+    server.send(423, "text/plain", "The car has this drive. Switch to PC Mode first.");
     return false;
   }
   return true;
@@ -1436,11 +1436,46 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #legend svg.ic{width:14px;height:14px;vertical-align:-2px}
  #up{display:none}
  .chk{display:block;font-size:14px;margin:2px 0}
+ /* Bootstrap-like look, written out here because the stick has no internet to load Bootstrap from.
+    Only the page's own buttons are styled; the small icon buttons in the file rows are left alone. */
+ body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:#212529;line-height:1.5}
+ h2{font-weight:500;line-height:1.2}
+ #toggle,#scan,#wconn,#updcheck,#updgo,#updfilego,#rebuild,#take,#tabs button,#tools button.ib{
+  display:inline-block;font-weight:400;line-height:1.5;text-align:center;vertical-align:middle;cursor:pointer;
+  border:1px solid transparent;border-radius:.375rem;padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;
+  transition:color .15s,background-color .15s,border-color .15s}
+ #toggle,#wconn,#tabs button.on{color:#fff;background:#0d6efd;border-color:#0d6efd}
+ #toggle:hover,#wconn:hover,#tabs button.on:hover{background:#0b5ed7;border-color:#0a58ca}
+ #updgo,#updfilego{color:#fff;background:#198754;border-color:#198754}
+ #updgo:hover,#updfilego:hover{background:#157347;border-color:#146c43}
+ #scan,#updcheck,#tabs button{color:#6c757d;background:transparent;border-color:#6c757d}
+ #scan:hover,#updcheck:hover,#tabs button:hover{color:#fff;background:#6c757d}
+ #tabs button.on{color:#fff;background:#0d6efd;border-color:#0d6efd}
+ #rebuild{color:#fff;background:#dc3545;border-color:#dc3545}
+ #rebuild:hover{background:#bb2d3b;border-color:#b02a37}
+ #take{color:#000;background:#ffc107;border-color:#ffc107}
+ #take:hover{background:#ffca2c;border-color:#ffc720}
+ #tools button.ib{color:#0d6efd;background:transparent;border-color:#0d6efd;padding:.25rem .5rem}
+ #tools button.ib:hover{color:#fff;background:#0d6efd}
+ #toggle:disabled,#scan:disabled,#wconn:disabled,#updcheck:disabled,#updgo:disabled,#updfilego:disabled,#rebuild:disabled,#take:disabled{opacity:.65;cursor:default}
+ #tabs{gap:0;margin:12px 0 4px}
+ #tabs button{flex:1;margin:0;border-radius:0}
+ #tabs button:first-child{border-radius:.375rem 0 0 .375rem}
+ #tabs button:last-child{border-radius:0 .375rem .375rem 0;margin-left:-1px}
+ #tabs button{font-weight:400}
+ #bar{padding:1rem;border:1px solid #9ec5fe;border-radius:.375rem;background:#cfe2ff;color:#052c65;margin-bottom:1rem}
+ #bar.usb{background:#fff3cd;border-color:#ffe69c;color:#664d03}
+ #modehelp{font-size:.875rem;margin-top:.4rem;opacity:.85}
+ details{background:#fff;border:1px solid #dee2e6;border-radius:.375rem;padding:.6rem .9rem}
+ details[open]>summary{margin-bottom:.4rem}
+ details input[type=text],details input[type=password],details select{border:1px solid #ced4da;border-radius:.375rem;padding:.375rem .75rem;font-size:1rem}
+ details input[type=file]{margin:.25rem 0}
+ progress{accent-color:#0d6efd}
 </style></head><body>
 <h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small>
  <a id="updi" href="#upd" hidden title="A firmware update is available" aria-label="A firmware update is available"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 5l5 5h-3.5v5h-3v-5H7z"/></svg></a></h2>
 <div id="host"></div>
-<div id="bar"><span id="mode"></span><br><button id="toggle"></button></div>
+<div id="bar"><span id="mode"></span><br><button id="toggle"></button><div id="modehelp"></div></div>
 <details id="wifi"><summary>Wi-Fi network (join your router)</summary>
  <div id="wst"></div>
  <div id="wsaved"></div>
@@ -1449,7 +1484,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <input type="text" id="ssid" placeholder="Network name (type it here if not listed)" maxlength="32" autocapitalize="off" autocomplete="off">
  <input type="password" id="pass" placeholder="Password (blank if open)" maxlength="63" autocomplete="off">
  <label class="chk"><input type="checkbox" id="showpw"> Show password</label>
- <label class="chk"><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
+ <label class="chk"><input type="checkbox" id="hid"> Hidden / not listed (just save it, don't connect now)</label>
  <div><button id="wconn">Connect</button></div>
 </details>
 <details id="upd"><summary>Firmware update<span id="updtag"></span></summary>
@@ -1539,12 +1574,13 @@ async function load(){
  if(hs!==hasStore){hasStore=hs;vol=hasStore&&!pcLib?'store':'car';dir=dirs[vol]}
  $('#bar').className=usb?'usb':'';
  $('#mode').textContent=st.problem?'Card problem: '+st.problem+'.':usb
-  ?'Car mode: the car is using its drive.'+(hasStore?' You can still edit the sound library.':' Editing is disabled.')
-  :'Edit mode: the car drive is with the stick. '+(pcLib?'A computer on the USB port sees the sound library as a drive.':'Nothing is shown on the USB port.');
+  ?'Car Mode: Boombox is exposed to the car, CHIME_STORE is hidden.'+(hasStore?' You can still edit CHIME_STORE here.':' Editing is disabled.')
+  :'PC Mode: Boombox is hidden, CHIME_STORE is exposed. '+(pcLib?'A computer on the USB port sees CHIME_STORE as a drive.':'Nothing is shown on the USB port right now (you took CHIME_STORE back to edit it here).');
  if(st.ver)$('#ver').textContent='v'+st.ver;
  if(st.host)$('#host').textContent='Name on your network: '+st.host+'  (http://'+st.host+'.local)';
  updLoad();
- $('#toggle').textContent=usb?'Switch to edit mode (edit the car drive here, library on the computer)':'Give the car its drive back';
+ $('#toggle').textContent=usb?'Switch to PC Mode':'Switch to Car Mode';
+ $('#modehelp').textContent=usb?'PC Mode hides Boombox and shows CHIME_STORE to a computer on the USB port. You can then edit Boombox here.':'Car Mode gives Boombox back to the car and hides CHIME_STORE. The stick always starts in Car Mode.';
  $('#tabs').style.display=hasStore?'':'none';
  $('#tlib').className=vol==='store'?'on':'';
  $('#tcar').className=vol==='car'?'on':'';
@@ -1553,7 +1589,7 @@ async function load(){
  $('#volinfo').textContent=!hasStore?'':vol==='store'
   ?(pcLib?'The computer on the USB port is using the sound library as a drive, so it can\'t be edited here at the same time.'
    :'Your sounds, on the stick\'s own storage. The car never sees these files.'+(st.stTotal?' '+fmt(st.stFree*1024)+' free of '+fmt(st.stTotal*1024)+'.':''))
-  :(usb?'The car is using this drive. Switch to edit mode to see or edit it.':'What the car sees. Make Lock Chime writes LockChime.wav here.'+(st.total?' '+fmt(st.used)+' used of '+fmt(st.total)+'.':''));
+  :(usb?'The car is using this drive. Switch to PC Mode to see or edit it.':'What the car sees. Make Lock Chime writes LockChime.wav here.'+(st.total?' '+fmt(st.used)+' used of '+fmt(st.total)+'.':''));
  $('#tools').style.display=editable?'':'none';
  $('#path').textContent=editable?(hasStore?(vol==='store'?'Library':'Car drive')+': ':'')+dir:'';
  const t=$('#files');t.innerHTML='';
@@ -1679,17 +1715,19 @@ $('#scan').onclick=async()=>{
  $('#wst').textContent='Scan did not finish. Try again.';
 };
 async function wconnect(force){
- $('#wst').textContent='Checking network...';
- const body=new URLSearchParams({ssid:$('#ssid').value,pass:$('#pass').value,hidden:force?'1':'0'});
+ const save=!force&&$('#hid').checked;
+ $('#wst').textContent=save?'Saving...':'Checking network...';
+ const body=new URLSearchParams({ssid:$('#ssid').value,pass:$('#pass').value,hidden:save?'1':'0',force:force?'1':'0'});
  const r=await fetch('/wifi/connect',{method:'POST',body});
  const t=await r.text();
  if(r.status===404&&!force){
   if(confirm('"'+$('#ssid').value+'" was not found in a scan (it may be hidden or out of range). Try connecting anyway?'))return wconnect(true);
  }
  $('#wst').textContent=t;
+ if(r.ok&&save){wsaved();return}
  if(r.ok&&!wpoll)wpoll=setInterval(wstatus,2000);
 }
-$('#wconn').onclick=()=>wconnect($('#hid').checked).catch(e=>{$('#wst').textContent=e.message});
+$('#wconn').onclick=()=>wconnect(false).catch(e=>{$('#wst').textContent=e.message});
 
 async function wsaved(){
  try{
@@ -2384,7 +2422,9 @@ void handleWifiSaved() {
 void handleWifiConnect() {
   String ssid = server.arg("ssid");
   String pass = server.arg("pass");
-  bool hidden = server.arg("hidden") == "1";
+  bool saveOnly = server.arg("hidden") == "1";   // the "Hidden / not listed" tick box: remember it, don't connect now
+  bool force = server.arg("force") == "1";       // "try anyway" after the network was not found in a scan
+  bool hidden = saveOnly || force;               // it is stored as a hidden network
 
   if (ssid.length() < 1 || ssid.length() > 32) {
     server.send(400, "text/plain", "Network name must be 1-32 characters.");
@@ -2399,8 +2439,17 @@ void handleWifiConnect() {
     return;
   }
 
-  // Make sure the network exists (skipped for hidden networks).
-  if (!hidden) {
+  // "Hidden / not listed": just remember the network. It is joined later by the automatic
+  // join (which tries hidden networks when nothing else matches), not now.
+  if (saveOnly) {
+    addOrUpdateNet(ssid, pass, true);
+    staConnectSaved();                // look for it soon
+    server.send(200, "text/plain", "Saved. The stick will join \"" + ssid + "\" when it is in range.");
+    return;
+  }
+
+  // Make sure the network exists (skipped when the user said to try anyway).
+  if (!force) {
     uint32_t t0 = millis();
     while (WiFi.scanComplete() == WIFI_SCAN_RUNNING && millis() - t0 < 8000) delay(100);
     int n = WiFi.scanNetworks();   // blocking scan
@@ -2446,7 +2495,7 @@ void handleWifiDelete() {
 void handleMode() {
   bool on = server.arg("usb") == "1";
   setUsbMode(on);
-  if (!on) giveStoreToHost();          // edit mode: a computer on the USB port gets the library
+  if (!on) giveStoreToHost();          // PC Mode: a computer on the USB port gets the library
   server.send(200, "text/plain", "OK");
 }
 
@@ -3024,7 +3073,7 @@ void loop() {
   if (rebuildRequested) doCardRebuild();
   if (restartRequested) restartStick();   // a new lock chime was set (never returns)
 
-  // The host ejected its drive: the stick takes it back (the car's drive -> edit mode)
+  // The host ejected its drive: the stick takes it back (the car's drive -> PC Mode)
   if (ejectRequested) {
     ejectRequested = false;
     if (hostView == HOST_STORE) takeStoreBack();

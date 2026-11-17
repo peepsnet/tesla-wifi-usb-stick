@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.14.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.16.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -15,8 +15,10 @@ a general-purpose Wi-Fi USB drive for other devices.)
 - **Play** button on every `.wav` so you can listen before choosing
 - **Make Lock Chime** button on every `.wav`: copies it to `/LockChime.wav` (the original is kept) and
   warns you if the file doesn't look like something the car will play
-- Button on the stick: a short press picks a random lock chime from the library (16-bit PCM, under the size limit)
-  and restarts; holding it for more than 5 seconds only restarts the stick
+- **Sound categories** (Christmas Sounds, Halloween Sounds, ...): sort your sounds, give them readable names, and
+  choose which categories the random pick uses (see [Sound categories](#sound-categories))
+- Button on the stick: a short press picks a random lock chime from the categories marked Random (16-bit PCM, under the size limit)
+  and restarts; holding it for more than 5 seconds only restarts the stick (the web page has a **Restart stick** button for the same)
 - **Firmware updates over Wi-Fi from the web page** that keep your settings, saved networks and files, with an
   **update-available icon** on the screen and the page (see [Updating the firmware](#updating-the-firmware))
 - Calls itself `TeslaWiFiUSBStick-<last 3 bytes of the MAC>` (for example `TeslaWiFiUSBStick-D4F1A2`) on your
@@ -56,7 +58,7 @@ as the final word. These are the requirements that most guides agree on:
 1. Join the stick's Wi-Fi and open `http://192.168.4.1`.
 2. Upload `.wav` files to the **Sound library**, press **Play** to listen, then **Make Lock Chime** on the one
    you want. The page shows its format and warns about anything unusual (not PCM, not 16-bit, too big, very long).
-3. Lock the car and listen. Or **press the stick's button** for a random one from the library.
+3. Lock the car and listen. Or **press the stick's button** for a random one from the categories marked **Random**.
 
 To set the chime, the stick takes the drive from the car, writes the file and then **restarts**. The car only
 reads the new sound when the stick looks unplugged and plugged in again; taking the drive away and giving it back
@@ -167,6 +169,32 @@ a few minutes to show a new file.
 Limits: a release that changes `partitions.csv` cannot be installed this way (the release notes would say so and
 you would use **Install firmware**). The Wi-Fi update needs a working Wi-Fi link: if the stick loses power halfway
 the old firmware keeps running, because the new one is only switched to at the very end.
+
+## Sound categories
+The **Sounds** tab of the web page shows your library grouped by category, for example:
+
+```
+UnCategorized         Christmas Sounds        Halloween Sounds
+  Door Chime            Jingle Bells            Spooky Laugh
+  Beep                  Door Chime              Ghost
+```
+
+- **A sound can be in several categories** (above, *Door Chime* is in two). A sound that is in no category is in the
+  built-in **UnCategorized**. New sounds (uploaded, or copied in with a computer in PC Mode) start there.
+- **New category** creates one (up to 30). The pencil next to a category renames it; the bin deletes it. Deleting a
+  category never deletes sounds: they only leave it (and go to UnCategorized if that was their last one).
+- Every sound has a **Name** (shown in the list, for people) and a **File name** (what the file is called on the card).
+  The pencil on a sound edits both, and which categories it is in. The file name is restricted to what is safe: letters,
+  numbers, spaces and `_ - . ( ) & ' #`, up to 64 characters, ending in `.wav`. Uploads get unsupported characters
+  replaced with `_`.
+- **Random** (tick box on each category, including UnCategorized): the stick's button picks its random lock chime only
+  from the sounds in ticked categories (still only 16-bit PCM files under the size limit). Use it for themes: tick
+  *Christmas Sounds* in December and untick the rest. If nothing is ticked, the screen says so and nothing changes.
+- **Library files** is the old folder view of CHIME_STORE. Renaming or deleting there keeps the categories in step.
+
+How it is stored: one small hidden text file, `.sounds.db`, in the root of CHIME_STORE (it is written to a temporary file
+first, so a power cut can't lose it). Firmware updates don't touch it. If you delete it, the sounds stay and simply go
+back to UnCategorized. The car's Boombox drive is not affected.
 
 ## Settings you can choose before flashing
 The installer page has a form. Whatever you pick is written into a small "cfg" area of the

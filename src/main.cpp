@@ -25,7 +25,8 @@
  * installer can write a small "cfg" block into flash (Wi-Fi name/password,
  * screen flip, drive name, ...) which overrides them at boot (see loadConfig).
  *
- * BOOT button: a short press picks a random .wav (smaller than the size
+ * BOOT button: a short press picks a random .wav (only from the categories marked
+ * Random, see "Sound library database"; smaller than the size
  * limit) from the library, copies it to /LockChime.wav on the car's drive and
  * restarts the stick. Holding it for more than 5 seconds only restarts.
  *
@@ -52,6 +53,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
+#include <vector>
 #include <HTTPClient.h>
 #include <NetworkClientSecure.h>
 #include <Update.h>
@@ -74,7 +76,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.14"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.16"               // bump for every release (also listed in CHANGELOG.md)
 #define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
 // Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
 // fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.
@@ -617,6 +619,7 @@ uint8_t sdCardDrive() { return SDMMCPeek::drive(); }
 // can put it back after the car's drive has been re-created.
 #define CHIME_BACKUP "/.LockChime.wav"
 bool restoreLockChime();
+void libInvalidate();                   // the sound library database must be read again (see "Sound library database")
 
 // ==== STORE FS BEGIN ====
 // The CHIME_STORE partition of a split card, mounted at /store as a second FAT
@@ -1307,12 +1310,14 @@ void takeStoreBack() {
   hostView = HOST_NONE;
   xSemaphoreGive(sdLock);
   STORE.begin();                  // mounted fresh, so the computer's changes are seen
+  libInvalidate();                // ... and so is the database of sounds and categories
 }
 
 void giveStoreToHost() {
   if (usbMode || !storeMounted) return;
   if (uploadFile) uploadFile.close();
   STORE.end();
+  libInvalidate();
   freeReset();                    // count the library's free space again
   msc.begin(layout.total, 512);   // the drive's size as the computer sees it
   xSemaphoreTake(sdLock, portMAX_DELAY);
@@ -1394,6 +1399,361 @@ bool requireVol() {
   return requireWifiMode();
 }
 
+// ---------------- Sound library database (categories) ----------------
+// Sounds can be sorted into categories ("Christmas Sounds", "Halloween Sounds", ...). A sound can be in any number
+// of categories; one that is in none is in the built-in "UnCategorized". Every sound has a display Name and a file
+// name; both can be edited. The stick's button picks its random chime only from the categories marked "Random".
+//
+// It is kept in one small text file on CHIME_STORE (hidden from the file list), one record per line, written to a
+// temporary file first so that a power cut can't lose it:
+//   WUSBLIB1
+//   U|1                      UnCategorized: 1 = include in random picks
+//   C|3|1|Christmas Sounds   category number (1..30), random flag, name
+//   S|10|/Sound5.wav|Jingle  categories as a bit mask (bit n = category n), path in the library, display name
+// Files that appear in the library by other means (a computer in PC Mode, the Library files tab) are added as
+// UnCategorized; entries whose file has gone are dropped. Nothing here touches the car's Boombox drive.
+#define LIB_DB      "/.sounds.db"
+#define LIB_DB_TMP  "/.sounds.tmp"
+#define MAX_CATS    30                 // category numbers 1..30; number 0 is "UnCategorized"
+#define MAX_SOUNDS  1000
+struct LibCat { bool used = false; bool rand = true; String name; };
+struct LibSound { String path; String name; uint32_t mask = 0; };
+static LibCat libCats[MAX_CATS + 1];
+static std::vector<LibSound> libSounds;
+static bool libLoaded = false;
+static bool libStale = true;           // files may have been added or removed behind our back: scan again
+
+static void libReset() {
+  libSounds.clear();
+  libSounds.shrink_to_fit();
+  for (int i = 0; i <= MAX_CATS; i++) { libCats[i].used = false; libCats[i].rand = true; libCats[i].name = ""; }
+  libCats[0].used = true;
+  libCats[0].name = "UnCategorized";
+}
+
+void libInvalidate() {
+  libLoaded = false;
+  libStale = true;
+  libReset();
+}
+
+// Display names and category names: no separator or control characters, trimmed, cut to maxLen bytes.
+static String libCleanName(const String& in, size_t maxLen) {
+  String o;
+  for (size_t i = 0; i < in.length(); i++) {
+    uint8_t c = (uint8_t)in[i];
+    if (c == '|' || c < 32 || c == 127) continue;
+    o += (char)c;
+  }
+  o.trim();
+  if (o.length() > maxLen) {
+    o = o.substring(0, maxLen);
+    while (o.length() && ((uint8_t)o[o.length() - 1] & 0xC0) == 0x80) o.remove(o.length() - 1);   // don't leave half a character
+    if (o.length() && (uint8_t)o[o.length() - 1] >= 0xC0) o.remove(o.length() - 1);
+    o.trim();
+  }
+  return o;
+}
+
+static bool libNameChar(char c) {
+  return isalnum((unsigned char)c) || c == ' ' || c == '_' || c == '-' || c == '.' || c == '(' || c == ')' ||
+         c == '&' || c == '\'' || c == '#';
+}
+
+// "" if f is an acceptable file name for a sound, otherwise what is wrong with it.
+static String libFileNameProblem(const String& f) {
+  if (f.length() > 64) return "The file name is too long (64 characters at most).";
+  String l = f;
+  l.toLowerCase();
+  if (f.length() < 5 || !l.endsWith(".wav")) return "The file name must end in .wav";
+  String base = f.substring(0, f.length() - 4);
+  if (base.startsWith(" ") || base.endsWith(" ")) return "The file name can't start or end with a space.";
+  if (base.startsWith(".") || base.endsWith(".")) return "The file name can't start or end with a dot.";
+  if (base.indexOf("..") >= 0) return "The file name can't contain two dots in a row.";
+  for (size_t i = 0; i < base.length(); i++) {
+    if (!libNameChar(base[i])) return "The file name can only use letters, numbers, spaces and _ - . ( ) & ' #";
+  }
+  return "";
+}
+
+// A name for an uploaded file: anything the list above doesn't allow becomes an underscore.
+static String libSafeUploadName(const String& in) {
+  String o;
+  for (size_t i = 0; i < in.length(); i++) o += libNameChar(in[i]) ? in[i] : '_';
+  return o;
+}
+
+static int libFind(const String& path) {
+  for (size_t i = 0; i < libSounds.size(); i++) if (libSounds[i].path == path) return (int)i;
+  return -1;
+}
+
+static uint32_t libUsedMask() {
+  uint32_t m = 0;
+  for (int i = 1; i <= MAX_CATS; i++) if (libCats[i].used) m |= (1UL << i);
+  return m;
+}
+
+static bool libSave() {
+  if (!storeMounted) return false;
+  File f = STORE.open(LIB_DB_TMP, FILE_WRITE);
+  if (!f) return false;
+  f.print("WUSBLIB1\n");
+  f.printf("U|%d\n", libCats[0].rand ? 1 : 0);
+  for (int i = 1; i <= MAX_CATS; i++) {
+    if (libCats[i].used) f.printf("C|%d|%d|%s\n", i, libCats[i].rand ? 1 : 0, libCats[i].name.c_str());
+  }
+  for (const LibSound& s : libSounds) f.printf("S|%lu|%s|%s\n", (unsigned long)s.mask, s.path.c_str(), s.name.c_str());
+  f.close();
+  STORE.remove(LIB_DB);
+  return STORE.rename(LIB_DB_TMP, LIB_DB);
+}
+
+static int libSplit(const String& s, String* out, int max) {
+  int n = 0, p = 0;
+  while (n < max - 1) {
+    int q = s.indexOf('|', p);
+    if (q < 0) break;
+    out[n++] = s.substring(p, q);
+    p = q + 1;
+  }
+  out[n++] = s.substring(p);
+  return n;
+}
+
+static void libLoad() {
+  if (libLoaded) return;
+  libLoaded = true;
+  libStale = true;
+  libReset();
+  if (!storeMounted) return;
+  File f = STORE.open(LIB_DB, FILE_READ);
+  if (!f) f = STORE.open(LIB_DB_TMP, FILE_READ);       // a save that was cut short: the new copy is complete if it has its header
+  if (!f) return;
+  String line = f.readStringUntil('\n');
+  line.trim();
+  if (line != "WUSBLIB1") { f.close(); return; }
+  while (f.available()) {
+    line = f.readStringUntil('\n');
+    line.trim();
+    String p[4];
+    if (line.startsWith("U|")) {
+      libCats[0].rand = line.substring(2) != "0";
+    } else if (line.startsWith("C|") && libSplit(line.substring(2), p, 3) == 3) {
+      int id = p[0].toInt();
+      if (id >= 1 && id <= MAX_CATS && p[2].length()) { libCats[id].used = true; libCats[id].rand = p[1] != "0"; libCats[id].name = p[2]; }
+    } else if (line.startsWith("S|") && libSplit(line.substring(2), p, 3) == 3 && libSounds.size() < MAX_SOUNDS) {
+      LibSound s;
+      s.mask = (uint32_t)strtoul(p[0].c_str(), nullptr, 10);
+      s.path = p[1];
+      s.name = p[2];
+      if (s.path.length() > 1 && s.path[0] == '/') libSounds.push_back(s);
+    }
+  }
+  f.close();
+  uint32_t used = libUsedMask();
+  for (LibSound& s : libSounds) s.mask &= used;        // never point at a category that doesn't exist
+}
+
+// Collects the path of every .wav file in the library (folders are searched too).
+static void libScan(const String& dirPath, int depth, std::vector<String>& found) {
+  File dir = STORE.open(dirPath);
+  if (!dir || !dir.isDirectory()) return;
+  File f = dir.openNextFile();
+  while (f) {
+    String name = String(f.name());
+    String full = (dirPath == "/" ? "" : dirPath) + "/" + name;
+    if (f.isDirectory()) {
+      if (depth < 6 && !name.startsWith(".") && !name.equalsIgnoreCase("System Volume Information")) libScan(full, depth + 1, found);
+    } else if (!name.startsWith(".")) {
+      String lower = name;
+      lower.toLowerCase();
+      if (lower.endsWith(".wav") && found.size() < MAX_SOUNDS) found.push_back(full);
+    }
+    f = dir.openNextFile();
+  }
+}
+
+// Makes the database match the files that are really in the library.
+static void libReconcile() {
+  libLoad();
+  if (!storeMounted || !libStale) return;
+  libStale = false;
+  std::vector<String> found;
+  libScan("/", 0, found);
+  bool changed = false;
+  for (size_t i = libSounds.size(); i-- > 0;) {
+    bool there = false;
+    for (const String& p : found) if (p == libSounds[i].path) { there = true; break; }
+    if (!there) { libSounds.erase(libSounds.begin() + i); changed = true; }
+  }
+  for (const String& p : found) {
+    if (libFind(p) >= 0 || libSounds.size() >= MAX_SOUNDS) continue;
+    LibSound s;
+    s.path = p;
+    String base = p.substring(p.lastIndexOf('/') + 1);
+    s.name = libCleanName(base.substring(0, base.length() - 4), 60);
+    if (s.name.length() == 0) s.name = base;
+    libSounds.push_back(s);
+    changed = true;
+  }
+  if (changed) libSave();
+}
+
+// A file or folder in the library was renamed or removed with the "Library files" tab.
+static void libPathMoved(const String& from, const String& to) {
+  libLoad();
+  bool changed = false;
+  for (LibSound& s : libSounds) {
+    if (s.path == from) { s.path = to; changed = true; }
+    else if (s.path.startsWith(from + "/")) { s.path = to + s.path.substring(from.length()); changed = true; }
+  }
+  if (changed) libSave();
+}
+static void libPathRemoved(const String& path) {
+  libLoad();
+  bool changed = false;
+  for (size_t i = libSounds.size(); i-- > 0;) {
+    if (libSounds[i].path == path || libSounds[i].path.startsWith(path + "/")) { libSounds.erase(libSounds.begin() + i); changed = true; }
+  }
+  if (changed) libSave();
+}
+
+// Rename a file, even if only the letter case changes (FAT needs a detour for that).
+static bool libMoveFile(const String& from, const String& to) {
+  String a = from, b = to;
+  a.toLowerCase();
+  b.toLowerCase();
+  if (a != b) return STORE.rename(from, to);
+  String tmp = from + ".tmp~";
+  if (!STORE.rename(from, tmp)) return false;
+  if (!STORE.rename(tmp, to)) { STORE.rename(tmp, from); return false; }
+  return true;
+}
+
+static bool requireStore() {
+  if (storeMounted) return true;
+  server.send(409, "text/plain", hostView == HOST_STORE
+    ? "The computer on the USB port is using the sound library. Take it back first."
+    : "The sound library is not available (no usable SD card).");
+  return false;
+}
+
+// GET /api/lib: {"cats":[{"i":0,"n":"UnCategorized","r":1},...],"sounds":[{"f":"/a.wav","n":"Name","c":mask},...]}
+void handleLibList() {
+  if (!requireStore()) return;
+  libReconcile();
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "application/json", "");
+  String out = "{\"cats\":[";
+  bool first = true;
+  for (int i = 0; i <= MAX_CATS; i++) {
+    if (!libCats[i].used) continue;
+    if (!first) out += ',';
+    first = false;
+    out += "{\"i\":" + String(i) + ",\"n\":\"" + jsonEscape(libCats[i].name) + "\",\"r\":" + String(libCats[i].rand ? 1 : 0) + "}";
+  }
+  out += "],\"sounds\":[";
+  first = true;
+  for (const LibSound& s : libSounds) {
+    if (!first) out += ',';
+    first = false;
+    out += "{\"f\":\"" + jsonEscape(s.path) + "\",\"n\":\"" + jsonEscape(s.name) + "\",\"c\":" + String((unsigned long)s.mask) + "}";
+    if (out.length() > 1000) { server.sendContent(out); out = ""; }
+  }
+  out += "]}";
+  server.sendContent(out);
+  server.sendContent("");
+}
+
+void handleLibCatAdd() {
+  if (!requireStore()) return;
+  libLoad();
+  String name = libCleanName(server.arg("name"), 40);
+  if (name.length() == 0) { server.send(400, "text/plain", "Give the category a name."); return; }
+  for (int i = 0; i <= MAX_CATS; i++) {
+    if (libCats[i].used && libCats[i].name.equalsIgnoreCase(name)) { server.send(409, "text/plain", "There is already a category with that name."); return; }
+  }
+  int id = 0;
+  for (int i = 1; i <= MAX_CATS && !id; i++) if (!libCats[i].used) id = i;
+  if (!id) { server.send(409, "text/plain", "That is the most categories there can be (" + String(MAX_CATS) + "). Delete one first."); return; }
+  libCats[id].used = true;
+  libCats[id].rand = true;
+  libCats[id].name = name;
+  if (!libSave()) { server.send(500, "text/plain", "Could not save the categories."); return; }
+  server.send(200, "text/plain", String(id));
+}
+
+static int libCatArg() {
+  int id = server.arg("id").toInt();
+  return (id >= 0 && id <= MAX_CATS && libCats[id].used) ? id : -1;
+}
+
+void handleLibCatRename() {
+  if (!requireStore()) return;
+  libLoad();
+  int id = libCatArg();
+  if (id < 1) { server.send(400, "text/plain", "No such category."); return; }
+  String name = libCleanName(server.arg("name"), 40);
+  if (name.length() == 0) { server.send(400, "text/plain", "Give the category a name."); return; }
+  for (int i = 0; i <= MAX_CATS; i++) {
+    if (i != id && libCats[i].used && libCats[i].name.equalsIgnoreCase(name)) { server.send(409, "text/plain", "There is already a category with that name."); return; }
+  }
+  libCats[id].name = name;
+  bool ok = libSave();
+  server.send(ok ? 200 : 500, "text/plain", ok ? "OK" : "Could not save the categories.");
+}
+
+void handleLibCatDelete() {
+  if (!requireStore()) return;
+  libLoad();
+  int id = libCatArg();
+  if (id < 1) { server.send(400, "text/plain", "No such category."); return; }
+  for (LibSound& s : libSounds) s.mask &= ~(1UL << id);     // the sounds stay; those left in no category are UnCategorized
+  libCats[id].used = false;
+  libCats[id].name = "";
+  bool ok = libSave();
+  server.send(ok ? 200 : 500, "text/plain", ok ? "OK" : "Could not save the categories.");
+}
+
+void handleLibCatRandom() {
+  if (!requireStore()) return;
+  libLoad();
+  int id = libCatArg();
+  if (id < 0) { server.send(400, "text/plain", "No such category."); return; }
+  libCats[id].rand = server.arg("on") != "0";
+  bool ok = libSave();
+  server.send(ok ? 200 : 500, "text/plain", ok ? "OK" : "Could not save the categories.");
+}
+
+// POST /lib/sound/set  path, name (display name), file (file name, no folder), mask (category bit mask)
+void handleLibSoundSet() {
+  if (!requireStore()) return;
+  libReconcile();
+  String path = safePath(server.arg("path"));
+  int idx = libFind(path);
+  if (idx < 0) { server.send(404, "text/plain", "That sound is not in the library any more."); return; }
+  String name = libCleanName(server.arg("name"), 60);
+  if (name.length() == 0) { server.send(400, "text/plain", "Give the sound a name."); return; }
+  String file = server.arg("file");
+  file.trim();
+  int slash = path.lastIndexOf('/');
+  String cur = path.substring(slash + 1);
+  String newPath = path;
+  if (file != cur) {                                        // an unchanged file name is left alone, whatever it looks like
+    String why = libFileNameProblem(file);
+    if (why.length()) { server.send(400, "text/plain", why); return; }
+    newPath = path.substring(0, slash) + "/" + file;
+    if (!file.equalsIgnoreCase(cur) && STORE.exists(newPath)) { server.send(409, "text/plain", "A file with that name already exists."); return; }
+    if (!libMoveFile(path, newPath)) { server.send(500, "text/plain", "Could not rename the file."); return; }
+  }
+  libSounds[idx].path = newPath;
+  libSounds[idx].name = name;
+  libSounds[idx].mask = (uint32_t)strtoul(server.arg("mask").c_str(), nullptr, 10) & libUsedMask();
+  bool ok = libSave();
+  server.send(ok ? 200 : 500, "text/plain", ok ? "OK" : "Could not save the categories.");
+}
+
 // ---------------- Web handlers ----------------
 const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html><head><meta charset="utf-8">
@@ -1444,6 +1804,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   display:inline-block;font-weight:400;line-height:1.5;text-align:center;vertical-align:middle;cursor:pointer;
   border:1px solid transparent;border-radius:.375rem;padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;
   transition:color .15s,background-color .15s,border-color .15s}
+ #reboot{display:inline-block;font-weight:400;line-height:1.5;text-align:center;vertical-align:middle;cursor:pointer;
+  border:1px solid #6c757d;border-radius:.375rem;padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;color:#6c757d;background:transparent}
+ #reboot:hover{color:#fff;background:#6c757d}
  #toggle,#wconn,#tabs button.on{color:#fff;background:#0d6efd;border-color:#0d6efd}
  #toggle:hover,#wconn:hover,#tabs button.on:hover{background:#0b5ed7;border-color:#0a58ca}
  #updgo,#updfilego{color:#fff;background:#198754;border-color:#198754}
@@ -1461,7 +1824,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tabs{gap:0;margin:12px 0 4px}
  #tabs button{flex:1;margin:0;border-radius:0}
  #tabs button:first-child{border-radius:.375rem 0 0 .375rem}
- #tabs button:last-child{border-radius:0 .375rem .375rem 0;margin-left:-1px}
+ #tabs button+button{margin-left:-1px}
+ #tabs button:last-child{border-radius:0 .375rem .375rem 0}
  #tabs button{font-weight:400}
  #bar{padding:1rem;border:1px solid #9ec5fe;border-radius:.375rem;background:#cfe2ff;color:#052c65;margin-bottom:1rem}
  #bar.usb{background:#fff3cd;border-color:#ffe69c;color:#664d03}
@@ -1471,11 +1835,33 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  details input[type=text],details input[type=password],details select{border:1px solid #ced4da;border-radius:.375rem;padding:.375rem .75rem;font-size:1rem}
  details input[type=file]{margin:.25rem 0}
  progress{accent-color:#0d6efd}
+ .bb{display:inline-block;font-weight:400;line-height:1.5;text-align:center;cursor:pointer;border:1px solid #6c757d;border-radius:.375rem;
+  padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;color:#6c757d;background:transparent}
+ .bb:hover{color:#fff;background:#6c757d}
+ .bb-primary{color:#fff;background:#0d6efd;border-color:#0d6efd}
+ .bb-primary:hover{background:#0b5ed7;border-color:#0a58ca}
+ #cats details.cat{padding:.4rem .75rem;margin-bottom:.6rem}
+ #cats summary{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+ #cats .cn{flex:1;min-width:8rem}
+ #cats .cc{font-size:.8rem;color:#6c757d;font-weight:400}
+ #cats .rnd{font-size:.85rem;font-weight:400;white-space:nowrap;cursor:pointer}
+ #cats td.nm{word-break:normal}
+ #cats td.nm .fn{font-size:.78rem;color:#6c757d;word-break:break-all}
+ #cats .sum{font-size:.9rem;margin:.5rem 0}
+ #cats .sum.bad{color:#b02a37}
+ dialog#edlg{border:1px solid #dee2e6;border-radius:.5rem;padding:1rem;width:min(92vw,420px);box-sizing:border-box}
+ dialog#edlg::backdrop{background:rgba(0,0,0,.45)}
+ #edlg h3{margin:0 0 .25rem;font-weight:500}
+ #edlg .sm{font-size:.8rem;color:#6c757d;margin:.2rem 0}
+ #edlg label{display:block;font-weight:600;font-size:.9rem;margin:.6rem 0 .15rem}
+ #edlg input[type=text]{width:100%;box-sizing:border-box;padding:.375rem .75rem;border:1px solid #ced4da;border-radius:.375rem;font-size:1rem}
+ #edlg .cl label{font-weight:400;margin:.1rem 0;display:block}
+ #ederr{color:#b02a37;min-height:1.2em;font-size:.9rem;margin:.4rem 0}
 </style></head><body>
 <h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small>
  <a id="updi" href="#upd" hidden title="A firmware update is available" aria-label="A firmware update is available"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 5l5 5h-3.5v5h-3v-5H7z"/></svg></a></h2>
 <div id="host"></div>
-<div id="bar"><span id="mode"></span><br><button id="toggle"></button><div id="modehelp"></div></div>
+<div id="bar"><span id="mode"></span><br><button id="toggle"></button><button id="reboot" title="Restart the stick (it starts in Car Mode)">Restart stick</button><div id="modehelp"></div></div>
 <details id="wifi"><summary>Wi-Fi network (join your router)</summary>
  <div id="wst"></div>
  <div id="wsaved"></div>
@@ -1520,7 +1906,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   <li>Upload .wav files to the <b>Sound library</b> (any folder). You can add, play and organise them any time, even while the car is using its drive. Press <b>Play</b> to listen first.</li>
   <li>Press <b>Make Lock Chime</b> on the one you want. It is copied to /LockChime.wav on the car drive and the original stays in the library. The page warns you if the file doesn't look right.</li>
   <li>The stick then <b>restarts</b>, because the car only reads the new sound when the stick looks unplugged and plugged in again. The screen shows each step. Your phone may drop off the stick's Wi-Fi for a few seconds.</li>
-  <li><b>Button on the stick:</b> a short press makes a random 16-bit PCM .wav from the library (under the size limit) the lock chime, then restarts. Holding it for more than 5 seconds only restarts the stick.</li>
+  <li><b>Button on the stick:</b> a short press makes a random 16-bit PCM .wav (under the size limit) from the categories marked <b>Random</b> on the Sounds tab the lock chime, then restarts. Holding it for more than 5 seconds only restarts the stick.</li>
  </ul>
  <h4>If the car still plays the old sound</h4>
  <ul>
@@ -1530,7 +1916,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  </ul>
  <p class="sm">Do not use this stick as the car's dashcam or Sentry drive: its USB is full speed only, and if the car offers to format the drive, say no (the stick's sound library would survive, but the car drive's contents would not). Software and models differ, and reports from owners don't always agree, so your owner's manual is the final word.</p>
 </details>
-<div id="tabs"><button id="tlib">Sound library</button><button id="tcar">Car drive</button></div>
+<div id="tabs"><button id="tlib">Sounds</button><button id="tfiles">Library files</button><button id="tcar">Car drive</button></div>
 <div id="volinfo"></div>
 <button id="take" style="display:none">Use the library here instead (eject it on the computer first)</button>
 <div id="tools">
@@ -1540,10 +1926,20 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 </div>
 <div id="path"></div>
 <div id="msg"></div>
+<div id="cats" style="display:none"></div>
 <table id="files"></table>
+<dialog id="edlg"><h3>Edit sound</h3>
+ <label for="edname">Name</label><input type="text" id="edname" maxlength="60" autocomplete="off">
+ <label for="edfile">File name</label><input type="text" id="edfile" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false">
+ <div class="sm">Letters, numbers, spaces and _ - . ( ) &amp; ' # only, ending in .wav</div>
+ <label>Categories</label><div class="cl" id="edcats"></div>
+ <div class="sm">A sound in no category is in UnCategorized.</div>
+ <div id="ederr"></div>
+ <div><button type="button" class="bb bb-primary" id="edsave">Save</button><button type="button" class="bb" id="edcancel">Cancel</button></div>
+</dialog>
 <div id="legend"></div>
 <script>
-let dir='/',usb=false,pcLib=false,vol='car',hasStore=false,dirs={store:'/',car:'/'};
+let dir='/',usb=false,pcLib=false,vol='car',hasStore=false,dirs={store:'/',car:'/'},lview='cats',lib=null;
 const IC={
  play:'M8 5v14l11-7z',stop:'M6 6h12v12H6z',
  chime:'M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5a6 6 0 0 0-4.5-5.8V4.5a1.5 1.5 0 0 0-3 0v.7A6 6 0 0 0 6 11v5l-2 2v1h16v-1z',
@@ -1582,7 +1978,9 @@ async function load(){
  $('#toggle').textContent=usb?'Switch to PC Mode':'Switch to Car Mode';
  $('#modehelp').textContent=usb?'PC Mode hides Boombox and shows CHIME_STORE to a computer on the USB port. You can then edit Boombox here.':'Car Mode gives Boombox back to the car and hides CHIME_STORE. The stick always starts in Car Mode.';
  $('#tabs').style.display=hasStore?'':'none';
- $('#tlib').className=vol==='store'?'on':'';
+ const catsView=vol==='store'&&lview==='cats';
+ $('#tlib').className=catsView?'on':'';
+ $('#tfiles').className=vol==='store'&&!catsView?'on':'';
  $('#tcar').className=vol==='car'?'on':'';
  const editable=vol==='store'?!pcLib:!usb;
  $('#take').style.display=vol==='store'&&pcLib?'':'none';
@@ -1591,9 +1989,13 @@ async function load(){
    :'Your sounds, on the stick\'s own storage. The car never sees these files.'+(st.stTotal?' '+fmt(st.stFree*1024)+' free of '+fmt(st.stTotal*1024)+'.':''))
   :(usb?'The car is using this drive. Switch to PC Mode to see or edit it.':'What the car sees. Make Lock Chime writes LockChime.wav here.'+(st.total?' '+fmt(st.used)+' used of '+fmt(st.total)+'.':''));
  $('#tools').style.display=editable?'':'none';
- $('#path').textContent=editable?(hasStore?(vol==='store'?'Library':'Car drive')+': ':'')+dir:'';
+ $('#mk').style.display=catsView?'none':'';
+ $('#path').textContent=editable&&!catsView?(hasStore?(vol==='store'?'Library':'Car drive')+': ':'')+dir:'';
+ $('#cats').style.display=catsView&&editable?'':'none';
+ $('#files').style.display=catsView?'none':'';
  const t=$('#files');t.innerHTML='';
  if(!editable)return;
+ if(catsView){await catsLoad();return}
  let list;
  try{list=await (await api('/api/list?dir='+enc(dir)+V())).json()}catch(e){msg(e.message);return}
  list.sort((a,b)=>b.d-a.d||a.n.localeCompare(b.n));
@@ -1614,17 +2016,7 @@ async function load(){
   if(!f.d&&/\.wav$/i.test(f.n)){
    x.appendChild(playBtn(join(dir,f.n)));
    if(vol==='store'||!(dir==='/'&&f.n.toLowerCase()==='lockchime.wav'))
-   x.appendChild(ibtn('chime','Make Lock Chime',async()=>{
-    let m='Copy '+f.n+' to LockChime.wav on the car drive?\n(An existing LockChime.wav will be replaced.'+' The stick restarts afterwards so the car reads the new sound.'+')';
-    try{
-     const i=await (await api('/api/wavinfo?path='+enc(join(dir,f.n))+V())).json();
-     if(i.ok)m+='\n\n'+(i.ch==1?'Mono':i.ch==2?'Stereo':i.ch+' channels')+', '+i.bits+'-bit, '+i.rate+' Hz, '+i.secs.toFixed(1)+' s, '+fmt(i.size);
-     if(i.warn.length)m+='\n\nWarnings:\n- '+i.warn.join('\n- ')+'\n\nThe car may not play this file. Copy it anyway?';
-    }catch(e){}
-    if(!confirm(m))return;
-    msg('Copying...');
-    try{await api('/lockchime?path='+enc(join(dir,f.n))+V(),{method:'POST'});afterChime(f.n)}catch(e){msg(e.message)}
-   }));
+   x.appendChild(ibtn('chime','Make Lock Chime',()=>chimeFlow(join(dir,f.n),f.n)));
   }
   x.appendChild(ibtn('rename','Rename',async()=>{
    const n=prompt('New name',f.n);
@@ -1638,14 +2030,138 @@ async function load(){
  }
 }
 
+async function chimeFlow(path,n){
+ let m='Copy '+n+' to LockChime.wav on the car drive?\n(An existing LockChime.wav will be replaced.'+' The stick restarts afterwards so the car reads the new sound.'+')';
+ try{
+  const i=await (await api('/api/wavinfo?path='+enc(path)+V())).json();
+  if(i.ok)m+='\n\n'+(i.ch==1?'Mono':i.ch==2?'Stereo':i.ch+' channels')+', '+i.bits+'-bit, '+i.rate+' Hz, '+i.secs.toFixed(1)+' s, '+fmt(i.size);
+  if(i.warn.length)m+='\n\nWarnings:\n- '+i.warn.join('\n- ')+'\n\nThe car may not play this file. Copy it anyway?';
+ }catch(e){}
+ if(!confirm(m))return;
+ msg('Copying...');
+ try{await api('/lockchime?path='+enc(path)+V(),{method:'POST'});afterChime(n)}catch(e){msg(e.message)}
+}
+
+// ---- Sounds tab: categories ----
+const bit=(m,i)=>((m>>>i)&1)===1;
+const postForm=(u,o)=>api(u,{method:'POST',body:new URLSearchParams(o)});
+async function catsLoad(){
+ try{lib=await (await api('/api/lib')).json()}catch(e){msg(e.message);$('#cats').innerHTML='';return}
+ catsDraw();
+}
+function randomCount(){
+ const on=lib.cats.filter(c=>c.r).map(c=>c.i);
+ return lib.sounds.filter(s=>s.c===0?on.includes(0):on.some(i=>i>0&&bit(s.c,i))).length;
+}
+function catsDraw(){
+ const box=$('#cats');box.innerHTML='';
+ const top=document.createElement('div');
+ const nb=document.createElement('button');nb.className='bb bb-primary';nb.textContent='New category';nb.onclick=newCat;
+ top.appendChild(nb);box.appendChild(top);
+ const sum=document.createElement('div');box.appendChild(sum);
+ const sumUpd=()=>{const n=randomCount();sum.className='sum'+(n?'':' bad');
+  sum.textContent=n?'The stick\'s button picks a random chime from the '+n+' sound'+(n==1?'':'s')+' in the categories marked Random.'
+   :'No sound is in a category marked Random, so the stick\'s button has nothing to pick. Tick Random on at least one category.'};
+ sumUpd();
+ const cats=[lib.cats[0]].concat(lib.cats.slice(1).sort((a,b)=>a.n.localeCompare(b.n)));
+ for(const c of cats){
+  const items=lib.sounds.filter(s=>c.i===0?s.c===0:bit(s.c,c.i)).sort((a,b)=>a.n.localeCompare(b.n));
+  const d=document.createElement('details');d.className='cat';d.open=true;
+  const sm=document.createElement('summary');
+  const nm=document.createElement('span');nm.className='cn';nm.textContent=c.n+' ';
+  const cc=document.createElement('span');cc.className='cc';cc.textContent='('+items.length+')';nm.appendChild(cc);
+  sm.appendChild(nm);
+  const lab=document.createElement('label');lab.className='rnd';
+  const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!c.r;
+  cb.onchange=async()=>{
+   try{await postForm('/lib/cat/rand',{id:c.i,on:cb.checked?1:0});c.r=cb.checked?1:0;sumUpd()}
+   catch(e){cb.checked=!cb.checked;msg(e.message)}
+  };
+  lab.appendChild(cb);lab.appendChild(document.createTextNode(' Random'));sm.appendChild(lab);
+  if(c.i>0){
+   sm.appendChild(ibtn('rename','Rename this category',e=>{e.preventDefault();renameCat(c)}));
+   sm.appendChild(ibtn('del','Delete this category (the sounds stay)',e=>{e.preventDefault();deleteCat(c)}));
+  }
+  d.appendChild(sm);
+  if(!items.length){const p=document.createElement('div');p.className='sm';p.textContent='No sounds here.';d.appendChild(p)}
+  const t=document.createElement('table');
+  for(const s of items){
+   const r=t.insertRow();
+   const n=r.insertCell();n.className='nm';n.textContent=s.n;
+   const fn=document.createElement('div');fn.className='fn';fn.textContent=s.f.replace(/^\//,'');n.appendChild(fn);
+   const x=r.insertCell();x.className='a';
+   x.appendChild(playBtn(s.f));
+   x.appendChild(ibtn('chime','Make Lock Chime',()=>chimeFlow(s.f,s.n)));
+   x.appendChild(ibtn('rename','Edit name, file name and categories',()=>editSound(s)));
+   x.appendChild(ibtn('del','Delete the file',async()=>{
+    if(!confirm('Delete "'+s.n+'" ('+s.f.replace(/^\//,'')+') from the library?'))return;
+    try{await api('/delete?path='+enc(s.f)+V(),{method:'POST'});catsLoad()}catch(e){msg(e.message)}
+   }));
+  }
+  d.appendChild(t);box.appendChild(d);
+ }
+}
+async function newCat(){
+ const n=prompt('Category name (for example Christmas Sounds)');if(!n)return;
+ try{await postForm('/lib/cat/add',{name:n});catsLoad()}catch(e){msg(e.message)}
+}
+async function renameCat(c){
+ const n=prompt('New category name',c.n);if(!n||n===c.n)return;
+ try{await postForm('/lib/cat/rename',{id:c.i,name:n});catsLoad()}catch(e){msg(e.message)}
+}
+async function deleteCat(c){
+ if(!confirm('Delete the category "'+c.n+'"?\n\nThe sounds stay in the library. They only leave this category, and a sound that is then in no category goes to UnCategorized.'))return;
+ try{await postForm('/lib/cat/delete',{id:c.i});catsLoad()}catch(e){msg(e.message)}
+}
+function fileNameProblem(f){
+ if(f.length>64)return 'The file name is too long (64 characters at most).';
+ if(f.length<5||!/\.wav$/i.test(f))return 'The file name must end in .wav';
+ const b=f.slice(0,-4);
+ if(/^ | $/.test(b))return 'The file name can\'t start or end with a space.';
+ if(/^\.|\.$/.test(b))return 'The file name can\'t start or end with a dot.';
+ if(b.indexOf('..')>=0)return 'The file name can\'t contain two dots in a row.';
+ if(!/^[A-Za-z0-9 _.()&'#-]+$/.test(b))return 'The file name can only use letters, numbers, spaces and _ - . ( ) & \' #';
+ return '';
+}
+function editSound(s){
+ const cur=s.f.replace(/^.*\//,'');
+ $('#edname').value=s.n;$('#edfile').value=cur;$('#ederr').textContent='';
+ const box=$('#edcats');box.innerHTML='';
+ const user=lib.cats.filter(c=>c.i>0).sort((a,b)=>a.n.localeCompare(b.n));
+ if(!user.length)box.innerHTML='<span class="sm">No categories yet. Close this and press New category.</span>';
+ for(const c of user){
+  const l=document.createElement('label');const cb=document.createElement('input');cb.type='checkbox';cb.value=c.i;cb.checked=bit(s.c,c.i);
+  l.appendChild(cb);l.appendChild(document.createTextNode(' '+c.n));box.appendChild(l);
+ }
+ $('#edcancel').onclick=()=>$('#edlg').close();
+ $('#edsave').onclick=async()=>{
+  const name=$('#edname').value.trim(),file=$('#edfile').value.trim();
+  if(!name){$('#ederr').textContent='Give the sound a name.';return}
+  if(file!==cur){const p=fileNameProblem(file);if(p){$('#ederr').textContent=p;return}}
+  let m=0;box.querySelectorAll('input:checked').forEach(cb=>{m+=Math.pow(2,+cb.value)});
+  try{await postForm('/lib/sound/set',{path:s.f,name:name,file:file,mask:m});$('#edlg').close();catsLoad()}
+  catch(e){$('#ederr').textContent=e.message}
+ };
+ $('#edlg').showModal();
+}
+
 function afterChime(n){
  const t='LockChime.wav is now '+n+'. The stick is restarting so the car reads it; this page comes back by itself (rejoin the stick\'s Wi-Fi if your phone dropped it).';
  $('#files').innerHTML='';$('#tools').style.display='none';msg(t);
  const w=()=>fetch('/api/status').then(r=>r.json()).then(()=>load().then(()=>msg('LockChime.wav is now '+n+'.'))).catch(()=>{msg(t);setTimeout(w,2000)});
  setTimeout(w,6000);
 }
-$('#tlib').onclick=()=>{vol='store';dir=dirs.store;load()};
+$('#tlib').onclick=()=>{vol='store';lview='cats';load()};
+$('#tfiles').onclick=()=>{vol='store';lview='files';dir=dirs.store;load()};
 $('#tcar').onclick=()=>{vol='car';dir=dirs.car;load()};
+$('#reboot').onclick=async()=>{
+ if(!confirm('Restart the stick?\n\nThe car sees it unplugged and plugged in again, and the stick starts in Car Mode. This page comes back by itself.'))return;
+ try{await api('/reboot',{method:'POST'})}catch(e){msg(e.message);return}
+ const t='The stick is restarting. This page comes back by itself (rejoin the stick\'s Wi-Fi if your phone dropped it).';
+ $('#files').innerHTML='';$('#tools').style.display='none';msg(t);
+ const w=()=>fetch('/api/status',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;location.reload()}).catch(()=>{msg(t);setTimeout(w,2000)});
+ setTimeout(w,6000);
+};
 $('#toggle').onclick=async()=>{
  msg('Switching...');
  try{await api('/mode?usb='+(usb?0:1),{method:'POST'})}catch(e){msg(e.message)}
@@ -1666,10 +2182,11 @@ $('#mk').onclick=async()=>{
  try{await api('/mkdir?path='+enc(join(dir,n))+V(),{method:'POST'});load()}catch(e){msg(e.message)}
 };
 $('#up').onchange=async e=>{
+ const d=vol==='store'&&lview==='cats'?'/':dir;      // new sounds go to the top of the library; they start as UnCategorized
  for(const f of e.target.files){
   msg('Uploading '+f.name+'...');
   const fd=new FormData();fd.append('file',f,f.name);
-  try{await api('/upload?dir='+enc(dir)+V(),{method:'POST',body:fd})}catch(err){msg(err.message);break}
+  try{await api('/upload?dir='+enc(d)+V(),{method:'POST',body:fd})}catch(err){msg(err.message);break}
  }
  e.target.value='';load();
 };
@@ -2076,7 +2593,7 @@ void handleList() {
   bool first = true;
   File f = root.openNextFile();
   while (f) {
-    if (String(f.name()) == (CHIME_BACKUP + 1)) { f = root.openNextFile(); continue; }   // the stick's own copy
+    if (String(f.name()) == (CHIME_BACKUP + 1) || String(f.name()).startsWith(".sounds.")) { f = root.openNextFile(); continue; }   // the stick's own files
     if (!first) out += ',';
     first = false;
     out += "{\"n\":\"" + jsonEscape(String(f.name())) + "\",\"d\":";
@@ -2110,6 +2627,7 @@ void handleUploadData() {
     String name = up.filename;
     name.replace("/", "_");
     name.replace("\\", "_");
+    if (isStoreVol()) { name = libSafeUploadName(name); libStale = true; }   // the library only allows tidy file names
     String path = (dir == "/" ? "" : dir) + "/" + name;
     if (uploadFile) uploadFile.close();
     uploadFile = volFS().open(path, FILE_WRITE);
@@ -2131,8 +2649,10 @@ void handleRename() {
   String to = safePath(server.arg("to"));
   if (from == "/" || to == "/") { server.send(400, "text/plain", "Bad name"); return; }
   if (volFS().exists(to)) { server.send(409, "text/plain", "A file with that name already exists"); return; }
-  if (volFS().rename(from, to)) server.send(200, "text/plain", "OK");
-  else server.send(500, "text/plain", "Rename failed");
+  if (volFS().rename(from, to)) {
+    if (isStoreVol()) libPathMoved(from, to);
+    server.send(200, "text/plain", "OK");
+  } else server.send(500, "text/plain", "Rename failed");
 }
 
 void handleDelete() {
@@ -2143,8 +2663,10 @@ void handleDelete() {
   bool isDir = f && f.isDirectory();
   if (f) f.close();
   bool ok = isDir ? volFS().rmdir(path) : volFS().remove(path);
-  if (ok) server.send(200, "text/plain", "OK");
-  else server.send(500, "text/plain", isDir ? "Folder must be empty" : "Delete failed");
+  if (ok) {
+    if (isStoreVol()) libPathRemoved(path);
+    server.send(200, "text/plain", "OK");
+  } else server.send(500, "text/plain", isDir ? "Folder must be empty" : "Delete failed");
 }
 
 void handleMkdir() {
@@ -2504,38 +3026,38 @@ void handleStoreTake() {               // edit the library from the web page aga
   server.send(200, "text/plain", "OK");
 }
 
+// Restart button on the web page: the same clean restart as the BOOT button's long press (the drive is let go of
+// properly, the car sees the stick unplugged and plugged in again). It always comes back in Car Mode.
+void handleReboot() {
+  server.send(200, "text/plain", "OK");
+  restartRequested = true;             // the main loop does it after the answer has been sent
+}
+
 // ---------------- Random lock chime (BOOT button) ----------------
 String lastChime;   // the file picked last time, so a press tries to choose a different one
 
-// Walk the card and pick one .wav at random (reservoir sampling: every candidate
-// has the same chance, and no list of paths needs to be kept in memory).
 // A file the car should be able to play: a real PCM WAV, 16-bit, mono or stereo.
 static bool isGoodChimeWav(File& f) {
   WavInfo w;
   return readWavInfo(f, w) && w.fmt == 1 && w.bits == 16 && w.ch >= 1 && w.ch <= 2;
 }
 
-static void pickRandomWav(fs::FS& vfs, const String& dirPath, int depth, const String& skip, String& chosen, uint32_t& count) {
-  File dir = vfs.open(dirPath);
-  if (!dir || !dir.isDirectory()) return;
-  File f = dir.openNextFile();
-  while (f) {
-    String name = String(f.name());
-    String full = (dirPath == "/" ? "" : dirPath) + "/" + name;
-    if (f.isDirectory()) {
-      if (depth < 6 && !name.startsWith(".") && !name.equalsIgnoreCase("System Volume Information")) {
-        pickRandomWav(vfs, full, depth + 1, skip, chosen, count);
-      }
-    } else if (!name.startsWith(".")) {             // skips macOS "._" junk files
-      String lower = name;
-      lower.toLowerCase();
-      bool isChime = (&vfs == (fs::FS*)&SD_MMC && dirPath == "/" && (lower == "lockchime.wav" || lower == "lockchime.tmp"));
-      if (lower.endsWith(".wav") && !isChime && f.size() > 0 && f.size() < cfgMaxChime && full != skip && isGoodChimeWav(f)) {
-        count++;
-        if (esp_random() % count == 0) chosen = full;
-      }
+// The random pick: only sounds in a category marked "Random" (UnCategorized counts as one), and only files the car
+// should be able to play (16-bit PCM WAV, under the size limit).
+static void pickRandomFromLibrary(const String& skip, String& chosen, uint32_t& count) {
+  libReconcile();
+  uint32_t randMask = 0;
+  for (int i = 1; i <= MAX_CATS; i++) if (libCats[i].used && libCats[i].rand) randMask |= (1UL << i);
+  for (const LibSound& s : libSounds) {
+    bool wanted = s.mask == 0 ? libCats[0].rand : (s.mask & randMask) != 0;
+    if (!wanted || s.path == skip) continue;
+    File f = STORE.open(s.path, FILE_READ);
+    if (!f || f.isDirectory()) continue;
+    if (f.size() > 0 && f.size() < cfgMaxChime && isGoodChimeWav(f)) {
+      count++;
+      if (esp_random() % count == 0) chosen = s.path;
     }
-    f = dir.openNextFile();
+    f.close();
   }
 }
 
@@ -2548,13 +3070,20 @@ void randomLockChime() {
     showToast("Lock Chime", "No sound library on the card", 3000, false);
     return;
   }
-  showBig("Lock Chime", "Picking a sound", "PICK", "from the library", C_CYAN, 30000);
+  libLoad();
+  bool anyCategory = libCats[0].rand;
+  for (int i = 1; i <= MAX_CATS; i++) if (libCats[i].used && libCats[i].rand) anyCategory = true;
+  if (!anyCategory) {
+    showToast("Chime failed", "No category is marked Random", 4000, false);
+    return;
+  }
+  showBig("Lock Chime", "Picking a sound", "PICK", "from the Random categories", C_CYAN, 30000);
   String chosen;
   uint32_t count = 0;
-  pickRandomWav(STORE, "/", 0, lastChime, chosen, count);  // first try: anything except last time's pick
-  if (count == 0) pickRandomWav(STORE, "/", 0, "", chosen, count);   // only one candidate: allow a repeat
+  pickRandomFromLibrary(lastChime, chosen, count);   // first try: anything except last time's pick
+  if (count == 0) pickRandomFromLibrary("", chosen, count);   // only one candidate: allow a repeat
   if (count == 0) {
-    showToast("Chime failed", "No suitable .wav files in the library", 4000, false);
+    showToast("Chime failed", "No suitable .wav files in the Random categories", 4000, false);
     return;
   }
   if (applyLockChime(STORE, chosen, false).length() == 0) lastChime = chosen;
@@ -3043,6 +3572,7 @@ void setup() {
   server.on("/lockchime", HTTP_POST, BUSY_GUARD(handleLockChime));
   server.on("/mode", HTTP_POST, BUSY_GUARD(handleMode));
   server.on("/store/take", HTTP_POST, BUSY_GUARD(handleStoreTake));
+  server.on("/reboot", HTTP_POST, BUSY_GUARD(handleReboot));
   server.on("/wifi/scan", HTTP_POST, BUSY_GUARD(handleWifiScan));
   server.on("/api/wifi/networks", HTTP_GET, handleWifiNetworks);
   server.on("/api/wifi/status", HTTP_GET, handleWifiStatus);
@@ -3051,6 +3581,12 @@ void setup() {
   server.on("/wifi/delete", HTTP_POST, BUSY_GUARD(handleWifiDelete));
   server.on("/play", HTTP_GET, handlePlay);
   server.on("/api/wavinfo", HTTP_GET, handleWavInfo);
+  server.on("/api/lib", HTTP_GET, handleLibList);
+  server.on("/lib/cat/add", HTTP_POST, BUSY_GUARD(handleLibCatAdd));
+  server.on("/lib/cat/rename", HTTP_POST, BUSY_GUARD(handleLibCatRename));
+  server.on("/lib/cat/delete", HTTP_POST, BUSY_GUARD(handleLibCatDelete));
+  server.on("/lib/cat/rand", HTTP_POST, BUSY_GUARD(handleLibCatRandom));
+  server.on("/lib/sound/set", HTTP_POST, BUSY_GUARD(handleLibSoundSet));
   server.on("/api/update", HTTP_GET, handleUpdateInfo);
   server.on("/update/check", HTTP_POST, handleUpdateCheck);
   server.on("/update/install", HTTP_POST, handleUpdateInstall);

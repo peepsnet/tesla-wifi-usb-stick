@@ -1,0 +1,13 @@
+{
+  "name": "Wi-Fi USB Stick (update)",
+  "version": "__VERSION__",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware-app.bin", "offset": 65536 },
+        { "path": "otadata.bin", "offset": 57344 }
+      ]
+    }
+  ]
+}

@@ -1,10 +1,13 @@
 # One workflow for everything that is published. On every push to "main" it
 # builds the firmware ONCE and then, from that same build:
 #
-#   deploy   - publishes the web installer (site/ + the firmware) to GitHub Pages
-#   release  - makes a GitHub release with the ready-to-flash file attached,
-#              but only when the version in src/main.cpp (FW_VERSION) has not
-#              been released yet (there is no tag v<version>)
+#   deploy   - publishes the web installer (site/ + the firmware) to GitHub Pages.
+#              The same site is where installed sticks look for updates: it holds
+#              latest.json and firmware-app.bin (see tools/build-merged.sh)
+#   release  - makes a GitHub release with the ready-to-flash files attached
+#              (-full.bin for a first install, -app.bin for an update that keeps
+#              the user's data), but only when the version in src/main.cpp
+#              (FW_VERSION) has not been released yet (there is no tag v<version>)
 #
 # So: bump FW_VERSION, add its section to CHANGELOG.md, push to main, and both
 # the installer and the release appear. Pushes that don't change the version
@@ -30,6 +33,7 @@ jobs:
       ver: ${{ steps.ver.outputs.ver }}
       tag: ${{ steps.ver.outputs.tag }}
       asset: ${{ steps.ver.outputs.asset }}
+      appasset: ${{ steps.ver.outputs.appasset }}
       release: ${{ steps.ver.outputs.release }}
     steps:
       - name: Check out the repository
@@ -51,6 +55,7 @@ jobs:
           echo "ver=$VER" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "asset=tesla-wifi-usb-stick-$TAG-full.bin" >> "$GITHUB_OUTPUT"
+          echo "appasset=tesla-wifi-usb-stick-$TAG-app.bin" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -71,8 +76,8 @@ jobs:
 
       - name: Assemble the web page
         run: |
-          cp site/index.html site/manifest.json _site/
-          sed -i "s/__VERSION__/${{ steps.ver.outputs.ver }} (build ${GITHUB_SHA::7})/" _site/manifest.json
+          cp site/index.html site/manifest.json site/manifest-update.json _site/
+          sed -i "s/__VERSION__/${{ steps.ver.outputs.ver }} (build ${GITHUB_SHA::7})/" _site/manifest.json _site/manifest-update.json
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v3
@@ -84,7 +89,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: firmware
-          path: _site/firmware.bin
+          path: |
+            _site/firmware.bin
+            _site/firmware-app.bin
           if-no-files-found: error
           retention-days: 7
 
@@ -115,7 +122,7 @@ jobs:
       - name: Release notes
         run: |
           mkdir -p dist
-          python3 tools/release-notes.py "${{ needs.build.outputs.ver }}" "${{ needs.build.outputs.asset }}" > dist/notes.md
+          python3 tools/release-notes.py "${{ needs.build.outputs.ver }}" "${{ needs.build.outputs.asset }}" "${{ needs.build.outputs.appasset }}" > dist/notes.md
           cat dist/notes.md
 
       - name: Fetch the firmware built above
@@ -124,8 +131,10 @@ jobs:
           name: firmware
           path: dist
 
-      - name: Name the file for this version
-        run: mv dist/firmware.bin "dist/${{ needs.build.outputs.asset }}"
+      - name: Name the files for this version
+        run: |
+          mv dist/firmware.bin "dist/${{ needs.build.outputs.asset }}"
+          mv dist/firmware-app.bin "dist/${{ needs.build.outputs.appasset }}"
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2
@@ -134,5 +143,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Tesla Wi-Fi USB Stick ${{ needs.build.outputs.tag }}
           body_path: dist/notes.md
-          files: dist/${{ needs.build.outputs.asset }}
+          files: |
+            dist/${{ needs.build.outputs.asset }}
+            dist/${{ needs.build.outputs.appasset }}
           fail_on_unmatched_files: true

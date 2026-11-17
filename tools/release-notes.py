@@ -1,12 +1,12 @@
 """Prints the GitHub release notes for one version: its CHANGELOG.md section
 followed by flashing instructions.
 
-Usage: python3 tools/release-notes.py VERSION ASSET_NAME
+Usage: python3 tools/release-notes.py VERSION ASSET_NAME APP_ASSET_NAME
 """
 import re
 import sys
 
-ver, asset = sys.argv[1], sys.argv[2]
+ver, asset, app_asset = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open("CHANGELOG.md", encoding="utf-8").read()
 
 # The section that starts with "## <version>" (for example "## 0.6 (2026-11-20)").
@@ -35,6 +35,15 @@ is flashed at address **0x0**. It uses the default settings listed in the README
 4. Unplug and re-plug the dongle without holding the button.
 
 Command line alternative: `esptool.py --chip esp32s3 write_flash 0x0 {asset}`
+
+## Update (keeps your settings, saved Wi-Fi networks and card)
+
+**Sticks running 0.13 or newer** can update over Wi-Fi: open the stick's web page and use **Firmware update**
+(the stick also shows an arrow icon on its screen and on the page when an update exists). If the stick has no
+internet, pick the attached `{app_asset}` in that panel.
+
+**Older sticks** (or to update over USB): open the web installer in Chrome or Edge and use **Update**; it flashes
+only the app and leaves everything else alone.
 
 Flashing replaces the firmware and does not touch the microSD card. But note **First Run**: a card that is not
 set up for the stick yet is erased the first time the stick starts with it (see the README).

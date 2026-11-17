@@ -3,6 +3,25 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.13 (2026-11-17)
+- **Network name:** the stick now calls itself `TeslaWiFiUSBStick-` plus the last 3 bytes of its MAC address
+  (for example `TeslaWiFiUSBStick-D4F1A2`). That is the name your router lists, and
+  `http://TeslaWiFiUSBStick-D4F1A2.local` opens the web page from your home network. The name is shown at the
+  top of the web page. (The stick's own Wi-Fi network name is unchanged: choose it in the installer)
+- **Firmware updates over Wi-Fi, keeping all your data.** New **Firmware update** panel on the web page. The new
+  firmware is written to the second app slot and the stick restarts into it; settings, saved Wi-Fi networks and the
+  SD card are never touched. Two ways in: the stick downloads it from GitHub itself (when it is on a home Wi-Fi with
+  internet), or your phone/computer downloads it and uploads it to the stick, or you pick a downloaded
+  `...-app.bin` file. The download is checked (size, MD5, ESP32-S3 app image) before the stick switches to it
+- **Update-available icon:** a white arrow badge in the screen's title bar and a green arrow next to the title of the
+  web page. The stick looks on GitHub 20 seconds after joining a home Wi-Fi and every 6 hours after that; the
+  web page also looks using your own device's internet
+- **Web installer: Update button** that flashes only the app (and resets the boot slot), so settings, saved
+  networks and the card are kept. Use it once to get from 0.12 or older to 0.13; after that updates can
+  happen over Wi-Fi
+- Every build now also publishes `latest.json` and `firmware-app.bin` on the GitHub Pages site (which is where
+  sticks look), and each release has a `...-app.bin` next to the `...-full.bin`
+
 ## 0.12 (2026-11-16)
 - **The stick restarts after every new lock chime.** Testing in the car showed it only reads the new sound when
   the stick restarts; the 5 second eject from 0.11 was not enough and is gone

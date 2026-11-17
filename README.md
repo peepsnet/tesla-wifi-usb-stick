@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.12.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.13.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -17,6 +17,10 @@ a general-purpose Wi-Fi USB drive for other devices.)
   warns you if the file doesn't look like something the car will play
 - Button on the stick: a short press picks a random lock chime from the library (16-bit PCM, under the size limit)
   and restarts; holding it for more than 5 seconds only restarts the stick
+- **Firmware updates over Wi-Fi from the web page** that keep your settings, saved networks and files, with an
+  **update-available icon** on the screen and the page (see [Updating the firmware](#updating-the-firmware))
+- Calls itself `TeslaWiFiUSBStick-<last 3 bytes of the MAC>` (for example `TeslaWiFiUSBStick-D4F1A2`) on your
+  router and at `http://TeslaWiFiUSBStick-D4F1A2.local`
 - Joins your home Wi-Fi too, in every mode: scan, enter a password, or type a hidden network name.
   Up to 8 networks are remembered and can be deleted individually from the web page
 - Screen (if fitted) shows the mode, how full the sound library is (with a bar), which Wi-Fi the address is on, and
@@ -126,6 +130,44 @@ The stick's web page has two tabs:
 **Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
 the stick takes it away, copies the file and restarts.
 
+## Updating the firmware
+Updates never touch your settings (Wi-Fi name/password, drive name, ...), your saved Wi-Fi networks or the SD card
+(sounds included). That works because the flash has **two app slots** (`partitions.csv`): the update is written to
+the slot that is not running, checked, and only then does the stick switch to it. Settings live in their own
+areas (`cfg`, `nvs`) that an update never writes.
+
+**The update-available icon.** When a newer version than the one on the stick has been published, a white arrow
+badge appears in the screen's title bar and a green arrow next to the title of the web page. The stick looks
+20 seconds after it joins a home Wi-Fi that has internet, then every 6 hours. (The web page also looks, using
+the internet of the phone or computer you opened it on, so the arrow can appear there even if the stick has no
+internet itself.) The stick never installs anything on its own: you press **Install**.
+
+**Over Wi-Fi (firmware 0.13 or newer):** open the web page, **Firmware update**, **Check for updates**, **Install**.
+- *The stick has internet* (it joined your home Wi-Fi): the stick downloads the firmware from GitHub itself.
+  Your phone only watches the progress.
+- *Only the phone/computer has internet:* the page downloads the firmware from GitHub and hands it to the stick.
+- *Nobody has internet at the car:* download the `...-app.bin` from the
+  [releases](https://github.com/peepsnet/tesla-wifi-usb-stick/releases) beforehand and choose it under
+  **Install this file**.
+
+The stick then shows the progress on its screen, restarts into the new firmware (so the car sees it unplugged
+and plugged in again) and the page reloads by itself. If the download or the check fails, nothing is changed.
+
+**Over USB with the web installer:** the installer page has **Update firmware (keeps my data)**. It flashes only
+the app (and resets the boot slot), unlike **Install firmware**, which writes the whole flash including your
+settings. **Sticks that run 0.12 or older have no Wi-Fi update yet, so use this once to get to 0.13.** It is also the
+way back if a firmware ever fails to start (hold the button while plugging in, then update).
+
+**Where the update is hosted:** on this repository's GitHub. Every push to `main` makes the workflow publish, on
+the GitHub Pages site, `latest.json` (version, size, MD5) and `firmware-app.bin`, next to the web installer; each
+release also carries `...-app.bin`. The stick reads `UPDATE_BASE_URL` in `src/main.cpp` (already set to this
+repository's Pages site; change it if you fork) over HTTPS and checks GitHub's certificate. GitHub Pages can take
+a few minutes to show a new file.
+
+Limits: a release that changes `partitions.csv` cannot be installed this way (the release notes would say so and
+you would use **Install firmware**). The Wi-Fi update needs a working Wi-Fi link: if the stick loses power halfway
+the old firmware keeps running, because the new one is only switched to at the very end.
+
 ## Settings you can choose before flashing
 The installer page has a form. Whatever you pick is written into a small "cfg" area of the
 dongle's flash together with the firmware:
@@ -167,12 +209,16 @@ and the matching values at the top of `src/main.cpp`.
 3. Hold the dongle's button while plugging it in, then **PlatformIO: Upload**.
 
 ## Releasing a new version
-1. Change `#define FW_VERSION "0.5"` near the top of `src/main.cpp` (for example to `"0.6"`).
+1. Change `#define FW_VERSION "0.5"` near the top of `src/main.cpp` (for example to `"0.6"`). Sticks compare this
+   number with the one in `latest.json` to decide whether to show the update icon, so it must go **up** (`0.9` is
+   older than `0.12`).
 2. Add a `## 0.6 (date)` section at the top of `CHANGELOG.md`, and update "Current version" at the top of
    this README.
 3. Commit and push to `main`. That is all: one workflow builds the firmware once, rebuilds the web installer
    (it shows `0.6 (build abc1234)`) and, because there is no tag `v0.6` yet, also creates that tag and publishes a
-   release with the `CHANGELOG.md` notes and a ready-to-flash file attached (`tesla-wifi-usb-stick-v0.6-full.bin`).
+   release with the `CHANGELOG.md` notes and two files attached: `tesla-wifi-usb-stick-v0.6-full.bin` (first install)
+   and `tesla-wifi-usb-stick-v0.6-app.bin` (update that keeps the data). Installed sticks also see the new version
+   through `latest.json` on the Pages site and show the update icon.
 
 Pushes that don't change `FW_VERSION` only update the web installer; a version is never released twice. If the
 release step fails (for example `CHANGELOG.md` has no section for the version), the installer is still updated:
@@ -195,6 +241,9 @@ and merges everything into one image, then publishes that image with the web ins
 new version, attaches the same file to a GitHub release.
 
 The installer page uses [ESP Web Tools](https://esphome.github.io/esp-web-tools/).
+
+Besides the installer and `firmware.bin`, the same build publishes `firmware-app.bin`, `otadata.bin`, `latest.json`
+and `manifest-update.json` for the update paths above (see the top of `tools/build-merged.sh`).
 
 If a flashed dongle doesn't boot, try changing `--flash_mode dio` to `--flash_mode qio` in
 `tools/build-merged.sh`.

@@ -148,6 +148,33 @@
   </div>
 
   <div class="card">
+    <h2>Already installed? Update without losing anything</h2>
+    <p><strong>Easiest, over Wi-Fi (firmware 0.13 or newer):</strong> open the stick's own web page. When an update
+       exists, a green arrow appears next to the title (and on the stick's screen). Open <em>Firmware update</em> and
+       press <em>Install</em>. The stick downloads it from this site's GitHub (if it is on your home Wi-Fi with
+       internet) or your phone/computer downloads it and hands it over.</p>
+    <p><strong>Over USB (older firmware, or if Wi-Fi isn't an option):</strong> use the button below. Unlike
+       <em>Install firmware</em> above, it writes <u>only the program</u>. Your settings, saved Wi-Fi networks and
+       everything on the SD card stay as they are.</p>
+    <ol>
+      <li>Use <strong>Chrome or Edge on a desktop or laptop</strong>. <strong>Unplug</strong> the dongle, hold its button, plug it in while
+          holding, then release.</li>
+      <li>Click <strong>Update firmware</strong>, choose the <em>USB JTAG/serial debug unit</em> entry, and wait for it to finish.
+          Leave <em>Erase device</em> unticked (it is not offered here).</li>
+      <li><strong>Unplug and re-plug</strong> the dongle without holding the button.</li>
+    </ol>
+    <div class="install">
+      <esp-web-install-button manifest="manifest-update.json">
+        <button slot="activate" style="font-size:18px;padding:10px 22px;cursor:pointer">Update firmware (keeps my data)</button>
+        <span slot="unsupported">Your browser can't flash devices. Please open this page in Chrome or Edge on a desktop computer.</span>
+        <span slot="not-allowed">Flashing needs a secure (https) page.</span>
+      </esp-web-install-button>
+    </div>
+    <p class="muted">This update button also works for a stick that was already updated over Wi-Fi. If a release ever
+       needs a different flash layout, its release notes will say so and you will need <em>Install firmware</em> instead.</p>
+  </div>
+
+  <div class="card">
     <h2>3. First Run</h2>
     <ol>
       <li>Insert any microSD card. It does not need to be formatted first.</li>

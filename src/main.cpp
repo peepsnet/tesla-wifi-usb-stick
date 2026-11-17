@@ -51,6 +51,11 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
+#include <HTTPClient.h>
+#include <NetworkClientSecure.h>
+#include <Update.h>
+#include "esp_mac.h"
 #include <FS.h>
 #include <SD_MMC.h>
 #include "vfs_api.h"
@@ -69,7 +74,11 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.12"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.13"               // bump for every release (also listed in CHANGELOG.md)
+#define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
+// Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
+// fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.
+#define UPDATE_BASE_URL "https://peepsnet.github.io/tesla-wifi-usb-stick/"
 #define VOLUME_LABEL "Boombox"      // name shown for the drive (max 11 characters)
 #define BUTTON_PIN 0                   // BOOT button on most S3 boards
 #define BUTTON_LONG_MS 5000            // hold this long to just restart (a short press picks a random lock chime)
@@ -173,6 +182,19 @@ uint8_t  cfgBlOn = LCD_BL_ON;
 bool     cfgHidden = false;     // hide the stick's own Wi-Fi network name
 int      cfgChannel = 1;        // channel of the stick's own Wi-Fi network (1-13)
 bool     cfgDisplay = USE_DISPLAY;   // false for a dongle without a screen
+
+String   hostName = HOST_PREFIX;     // set at start-up from the MAC address (initHostName)
+
+// Firmware updates (see "Firmware updates" below)
+enum UpdState { UPD_IDLE, UPD_CHECKING, UPD_DOWNLOADING, UPD_DONE, UPD_ERROR };
+volatile UpdState updState = UPD_IDLE;
+String   updLatest;                  // newest version published on GitHub ("" until a check has worked)
+String   updMd5, updFile;            // from latest.json
+uint32_t updSize = 0;
+String   updErr;                     // why the last check/install failed
+volatile int updPct = 0;             // install progress
+bool     updAvail = false;           // a newer version than FW_VERSION is published (the screen shows an icon)
+volatile bool updCheckRequested = false, updInstallRequested = false, updRunning = false;
 
 // Wi-Fi client (station) state
 #define STA_TIMEOUT_MS 20000
@@ -1180,7 +1202,7 @@ void displayUpdate() {
   bool joined = WiFi.status() == WL_CONNECTED;
   String ip = (joined ? WiFi.localIP() : WiFi.softAPIP()).toString();
 
-  String key = String(titleColor) + "|" + usage + sizeText + "|" + ip + (joined ? "J" : "A");
+  String key = String(titleColor) + "|" + usage + sizeText + "|" + ip + (joined ? "J" : "A") + (updAvail ? "U" : "");
   if (key == lastScreenKey) return;      // nothing changed: no redraw, no flicker
   lastScreenKey = key;
 
@@ -1196,7 +1218,16 @@ void displayUpdate() {
   lcdPtr->fillRect(0, 0, W, 16, titleColor);
   lcdPtr->setFont(&fonts::Font0);
   lcdPtr->setTextColor(C_BLACK, titleColor);
-  text("Tesla WiFi USB Stick", 4, 4);
+  if (updAvail) {
+    // A newer firmware is published: shorter title, and a white "arrow up" badge where the rest of it was.
+    text("Tesla WiFi USB", 4, 4);
+    const int cx = 102, cy = 8;
+    lcdPtr->fillCircle(cx, cy, 7, C_WHITE);
+    lcdPtr->fillTriangle(cx, cy - 5, cx - 5, cy, cx + 5, cy, C_BLACK);
+    lcdPtr->fillRect(cx - 2, cy, 5, 5, C_BLACK);
+  } else {
+    text("Tesla WiFi USB Stick", 4, 4);
+  }
   right("v" FW_VERSION, 4);
 
   // Sound library: figure, size and a bar; or one line saying what is wrong
@@ -1388,7 +1419,12 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tesla ul{margin:6px 0 6px 18px;padding:0}
  #tesla li{margin:4px 0}
  #tesla h4{margin:12px 0 4px}
- #tesla .sm,#card .sm{font-size:13px;color:#666}
+ #tesla .sm,#card .sm,#upd .sm{font-size:13px;color:#666}
+ #updi{display:inline-block;vertical-align:middle;color:#0a7d2c;line-height:0;margin-left:6px}
+ #updi svg{width:22px;height:22px;fill:currentColor}
+ #updi[hidden]{display:none}
+ #host{font-size:12px;color:#888;margin:-8px 0 8px}
+ #updbar{width:100%;height:14px;margin:8px 0}
  #tabs{display:flex;gap:6px;margin:8px 0 2px}
  #tabs button{flex:1;padding:8px;border:1px solid #bbb;background:#f4f4f4;border-radius:6px;font-weight:600}
  #tabs button.on{background:#06c;color:#fff;border-color:#06c}
@@ -1401,7 +1437,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #up{display:none}
  .chk{display:block;font-size:14px;margin:2px 0}
 </style></head><body>
-<h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small></h2>
+<h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small>
+ <a id="updi" href="#upd" hidden title="A firmware update is available" aria-label="A firmware update is available"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 5l5 5h-3.5v5h-3v-5H7z"/></svg></a></h2>
+<div id="host"></div>
 <div id="bar"><span id="mode"></span><br><button id="toggle"></button></div>
 <details id="wifi"><summary>Wi-Fi network (join your router)</summary>
  <div id="wst"></div>
@@ -1413,6 +1451,18 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  <label class="chk"><input type="checkbox" id="showpw"> Show password</label>
  <label class="chk"><input type="checkbox" id="hid"> Hidden / not listed (skip the check)</label>
  <div><button id="wconn">Connect</button></div>
+</details>
+<details id="upd"><summary>Firmware update<span id="updtag"></span></summary>
+ <div id="updst" style="margin:6px 0"></div>
+ <progress id="updbar" max="100" value="0" hidden></progress>
+ <div>
+  <button id="updcheck">Check for updates</button>
+  <button id="updgo" hidden></button>
+ </div>
+ <p class="sm">Installing an update keeps your settings, your saved Wi-Fi networks and every file on the card. The new firmware is written next to the running one and the stick restarts into it. Do not unplug the stick while it installs.</p>
+ <p class="sm">No internet? Download the file ending in <code>-app.bin</code> from the project's GitHub releases page on a device that has internet, then pick it here:</p>
+ <input type="file" id="updfile" accept=".bin">
+ <button id="updfilego">Install this file</button>
 </details>
 <details id="card"><summary>Car drive tools</summary>
  <p class="sm">If the car's drive is damaged or the car stops reading it, you can erase and re-create it. Only the 4 GB "Boombox" drive is erased; your sound library is kept and the last lock chime is put back. The car sees its drive disappear for about a minute.</p>
@@ -1492,6 +1542,8 @@ async function load(){
   ?'Car mode: the car is using its drive.'+(hasStore?' You can still edit the sound library.':' Editing is disabled.')
   :'Edit mode: the car drive is with the stick. '+(pcLib?'A computer on the USB port sees the sound library as a drive.':'Nothing is shown on the USB port.');
  if(st.ver)$('#ver').textContent='v'+st.ver;
+ if(st.host)$('#host').textContent='Name on your network: '+st.host+'  (http://'+st.host+'.local)';
+ updLoad();
  $('#toggle').textContent=usb?'Switch to edit mode (edit the car drive here, library on the computer)':'Give the car its drive back';
  $('#tabs').style.display=hasStore?'':'none';
  $('#tlib').className=vol==='store'?'on':'';
@@ -1678,6 +1730,121 @@ function playBtn(path){
  return b;
 }
 
+// ---- firmware update ----
+let upd={cur:'',latest:'',avail:0,net:0,state:'idle',pct:0,err:'',base:''},updWeb=null,updWebTried=false,updTimer=0,updBusy=false;
+const vnew=(a,b)=>{const x=String(a).split(/\D+/).map(Number),y=String(b).split(/\D+/).map(Number);
+ for(let i=0;i<Math.max(x.length,y.length);i++){const p=x[i]||0,q=y[i]||0;if(p!==q)return p>q}return false};
+// the newest version either the stick or this device's own internet connection knows about
+function updNewest(){
+ let v='',via='';
+ if(upd.avail&&upd.latest){v=upd.latest;via='stick'}
+ if(updWeb&&vnew(updWeb.ver,upd.cur)&&(!v||vnew(updWeb.ver,v))){v=updWeb.ver;via='web'}
+ return {v,via};
+}
+async function updWebCheck(){
+ if(!upd.base)return;
+ try{
+  const c=new AbortController();setTimeout(()=>c.abort(),6000);
+  const j=await (await fetch(upd.base+'latest.json',{cache:'no-store',signal:c.signal})).json();
+  if(j&&j.version&&j.file)updWeb={ver:String(j.version),url:upd.base+j.file};
+ }catch(e){}
+}
+async function updLoad(){
+ if(updBusy)return;
+ try{upd=await (await fetch('/api/update',{cache:'no-store'})).json()}catch(e){return}
+ if(!updWebTried){updWebTried=true;await updWebCheck()}
+ updDraw();
+}
+function updDraw(){
+ const n=updNewest();
+ $('#updi').hidden=!n.v;
+ $('#updtag').textContent=n.v?' - v'+n.v+' available':'';
+ let t='Installed: v'+upd.cur+'. ';
+ if(n.v)t+='New version: v'+n.v+'.';
+ else if(upd.latest||updWeb)t+='This is the latest version.';
+ else t+='Not checked yet.'+(upd.net?'':' (The stick is not on a Wi-Fi network with internet, so it can\'t look by itself.)');
+ if(upd.err&&!updBusy)t+=' '+upd.err;
+ $('#updst').textContent=t;
+ const g=$('#updgo');
+ g.hidden=!n.v||updBusy;
+ g.textContent='Install v'+n.v;
+ $('#updcheck').disabled=updBusy;
+}
+function updProgress(txt,pct){
+ $('#updst').textContent=txt;
+ const b=$('#updbar');b.hidden=false;
+ if(pct===null)b.removeAttribute('value');else b.value=pct;
+}
+function updWaitReboot(){
+ updProgress('Restarting the stick. This page reloads by itself (rejoin the stick\'s Wi-Fi if your phone dropped it)...',null);
+ const w=()=>fetch('/api/status',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;location.reload()}).catch(()=>setTimeout(w,2000));
+ setTimeout(w,6000);
+}
+function updWatch(){
+ clearInterval(updTimer);
+ updTimer=setInterval(async()=>{
+  let s;
+  try{s=await (await fetch('/api/update',{cache:'no-store'})).json()}catch(e){clearInterval(updTimer);updWaitReboot();return}
+  upd=s;
+  if(s.state==='error'){clearInterval(updTimer);updBusy=false;$('#updbar').hidden=true;updDraw();return}
+  if(s.state==='done'){clearInterval(updTimer);updWaitReboot();return}
+  updProgress(s.state==='downloading'?'The stick is downloading and installing the update: '+s.pct+'%':'Working...',s.state==='downloading'?s.pct:null);
+ },1000);
+}
+function updUpload(blob,name){
+ return new Promise((res,rej)=>{
+  const x=new XMLHttpRequest();x.open('POST','/update/upload');
+  x.upload.onprogress=e=>{if(e.lengthComputable)updProgress('Sending the update to the stick: '+Math.round(e.loaded*100/e.total)+'%',e.loaded*100/e.total)};
+  x.onload=()=>x.status===200?res():rej(new Error(x.responseText||('Error '+x.status)));
+  x.onerror=()=>rej(new Error('The upload failed. Are you still on the stick\'s Wi-Fi?'));
+  const f=new FormData();f.append('fw',blob,name);x.send(f);
+ });
+}
+async function updRun(fn){
+ updBusy=true;$('#updgo').hidden=true;$('#updcheck').disabled=true;
+ try{await fn()}
+ catch(e){updBusy=false;$('#updbar').hidden=true;await updLoad();$('#updst').textContent='Update failed: '+e.message+' Nothing was changed.'}
+}
+const updWarn='\n\nYour settings, saved Wi-Fi networks and files are kept. The stick restarts afterwards; do not unplug it while it installs.';
+$('#updcheck').onclick=async()=>{
+ $('#updst').textContent='Checking...';
+ let ok=false;
+ if(upd.net){
+  try{await api('/update/check',{method:'POST'});
+   for(let i=0;i<20;i++){await new Promise(r=>setTimeout(r,1000));upd=await (await fetch('/api/update',{cache:'no-store'})).json();if(upd.state!=='checking')break}
+   ok=!upd.err}catch(e){}
+ }
+ updWebTried=true;await updWebCheck();
+ updDraw();
+ if(!ok&&!updWeb&&!upd.latest)$('#updst').textContent='Could not reach GitHub, neither from the stick nor from this device.'+(upd.err?' '+upd.err:'')+' Join your home Wi-Fi in the "Wi-Fi network" panel, or install a downloaded file below.';
+};
+$('#updgo').onclick=()=>{
+ const n=updNewest();if(!n.v)return;
+ if(!confirm('Install firmware v'+n.v+'?'+updWarn))return;
+ updRun(async()=>{
+  if(n.via==='stick'){
+   updProgress('Starting...',null);
+   await api('/update/install',{method:'POST'});
+   updWatch();
+  }else{
+   updProgress('Downloading v'+n.v+' from GitHub...',null);
+   const r=await fetch(updWeb.url,{cache:'no-store'});
+   if(!r.ok)throw new Error('GitHub answered '+r.status+'.');
+   const blob=await r.blob();
+   await updUpload(blob,'firmware-app.bin');
+   updWaitReboot();
+  }
+ });
+};
+$('#updfilego').onclick=()=>{
+ const f=$('#updfile').files[0];
+ if(!f){alert('Choose the firmware file (...-app.bin) first.');return}
+ if(!confirm('Install '+f.name+' ('+fmt(f.size)+')?'+updWarn))return;
+ updRun(async()=>{await updUpload(f,f.name);updWaitReboot()});
+};
+if(location.hash==='#upd')$('#upd').open=true;
+$('#updi').onclick=()=>{$('#upd').open=true};
+
 $('#rebuild').onclick=async()=>{
  if(!confirm('Erase everything on the car\'s Boombox drive and re-create it?\n\nYour sound library is kept and the last lock chime is put back.'))return;
  try{
@@ -1702,6 +1869,8 @@ void handleStatus() {
     out += ",\"used\":" + String((uint32_t)(SD_MMC.usedBytes()));
   }
   out += ",\"ver\":\"" FW_VERSION "\"";
+  out += ",\"host\":\"" + hostName + "\"";
+  if (updAvail) out += ",\"upd\":\"" + jsonEscape(updLatest) + "\"";     // a newer firmware is published
   if (cardProblem.length()) out += ",\"problem\":\"" + jsonEscape(cardProblem) + "\"";
   out += ",\"store\":" + String(storeMounted ? 1 : 0);
   out += ",\"pcLib\":" + String(hostView == HOST_STORE ? 1 : 0);   // a computer has the library
@@ -1896,7 +2065,7 @@ void handleDownload() {
 }
 
 void handleUploadData() {
-  if (isStoreVol() ? !storeMounted : usbMode) return;
+  if (updRunning || (isStoreVol() ? !storeMounted : usbMode)) return;
   HTTPUpload& up = server.upload();
   if (up.status == UPLOAD_FILE_START) {
     String dir = safePath(server.arg("dir"));
@@ -2357,6 +2526,310 @@ void restartStick() {
   ESP.restart();
 }
 
+// ---------------- Firmware updates ----------------
+// The flash has two app slots (app0 / app1, see partitions.csv). An update is written into the slot that is NOT
+// running and only then does the stick switch to it, so the running firmware is never touched. Nothing else in
+// flash is written: the settings ("cfg"), the saved Wi-Fi networks (NVS) and the SD card all stay as they are.
+//
+// Two ways to get the new firmware onto the stick, both from the web page:
+//   - the stick downloads it from GitHub itself (it must be joined to a home Wi-Fi that has internet), or
+//   - the web page sends it: the browser downloads firmware-app.bin from GitHub (or you pick the file from a
+//     GitHub release) and uploads it to /update/upload.
+// Where the update is: the GitHub Pages site (UPDATE_BASE_URL). The build workflow publishes there
+//   latest.json       {"version":"0.13","file":"firmware-app.bin","size":1234567,"md5":"..."}
+//   firmware-app.bin  the app image only (not the bootloader/partition table)
+#define UPDATE_CHECK_MS  (6UL * 3600UL * 1000UL)    // look for an update this often while on the internet
+#define UPDATE_RETRY_MS  (15UL * 60UL * 1000UL)     // ... or this soon after a failed look
+#define APP_MIN_BYTES    100000UL
+#define APP_MAX_BYTES    0x640000UL                 // size of an app slot (partitions.csv)
+
+// The certificate bundle that is built into the Arduino core (all the usual root CAs), used to check that we
+// are really talking to github.io.
+extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t rootca_crt_bundle_end[]   asm("_binary_x509_crt_bundle_end");
+
+// Compares dotted version numbers ("0.9" < "0.12"). Returns -1, 0 or 1.
+static int cmpVersion(const String& a, const String& b) {
+  size_t i = 0, j = 0;
+  while (i < a.length() || j < b.length()) {
+    long x = 0, y = 0;
+    while (i < a.length() && isdigit((unsigned char)a[i])) x = x * 10 + (a[i++] - '0');
+    while (j < b.length() && isdigit((unsigned char)b[j])) y = y * 10 + (b[j++] - '0');
+    if (x != y) return x < y ? -1 : 1;
+    while (i < a.length() && !isdigit((unsigned char)a[i])) i++;
+    while (j < b.length() && !isdigit((unsigned char)b[j])) j++;
+  }
+  return 0;
+}
+
+// Reads one value of a flat JSON object ("key":"text" or "key":123). No escapes are expected.
+static String jsonValue(const String& js, const char* key) {
+  String k = String("\"") + key + "\"";
+  int p = js.indexOf(k);
+  if (p < 0) return "";
+  p = js.indexOf(':', p + k.length());
+  if (p < 0) return "";
+  p++;
+  while (p < (int)js.length() && isspace((unsigned char)js[p])) p++;
+  if (p >= (int)js.length()) return "";
+  if (js[p] == '"') {
+    int q = js.indexOf('"', p + 1);
+    return q < 0 ? String("") : js.substring(p + 1, q);
+  }
+  int q = p;
+  while (q < (int)js.length() && js[q] != ',' && js[q] != '}' && !isspace((unsigned char)js[q])) q++;
+  return js.substring(p, q);
+}
+
+static bool updHttpBegin(HTTPClient& http, NetworkClientSecure& tls, const String& url) {
+  tls.setCACertBundle(rootca_crt_bundle_start, rootca_crt_bundle_end - rootca_crt_bundle_start);
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
+  http.setUserAgent("TeslaWiFiUSBStick/" FW_VERSION);
+  return http.begin(tls, url);
+}
+
+static bool updFail(const String& why) {
+  updErr = why;
+  updState = UPD_ERROR;
+  updRunning = false;
+  return false;
+}
+
+// Asks GitHub which version is the newest. Fills updLatest / updFile / updSize / updMd5 / updAvail.
+static bool updCheck() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return updFail("The stick is not on a Wi-Fi network with internet. Join your home Wi-Fi first.");
+  }
+  updState = UPD_CHECKING;
+  NetworkClientSecure tls;
+  HTTPClient http;
+  if (!updHttpBegin(http, tls, UPDATE_BASE_URL "latest.json")) return updFail("Could not start the request");
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    return updFail(code < 0 ? String("Could not reach GitHub") : "GitHub answered " + String(code));
+  }
+  String body = http.getString();
+  http.end();
+  if (body.length() > 2000) return updFail("Unexpected answer from GitHub");
+
+  String v = jsonValue(body, "version"), file = jsonValue(body, "file"), md5 = jsonValue(body, "md5");
+  uint32_t size = (uint32_t)jsonValue(body, "size").toInt();
+  bool md5ok = md5.length() == 32;
+  for (size_t i = 0; md5ok && i < md5.length(); i++) md5ok = isxdigit((unsigned char)md5[i]);
+  // The file must sit next to latest.json (no other host, no folders up).
+  bool fileOk = file.endsWith(".bin") && file.indexOf("..") < 0 && file.indexOf(':') < 0 && file.indexOf('/') < 0;
+  if (v.length() == 0 || !md5ok || !fileOk || size < APP_MIN_BYTES || size > APP_MAX_BYTES) {
+    return updFail("latest.json on GitHub is not in the expected form");
+  }
+  updLatest = v;
+  updFile = file;
+  updSize = size;
+  updMd5 = md5;
+  updAvail = cmpVersion(updLatest, FW_VERSION) > 0;
+  updErr = "";
+  updState = UPD_IDLE;
+  return true;
+}
+
+// Is this the start of an ESP32-S3 app image (and not, say, a full image with a bootloader)?
+static const char* appImageProblem(const uint8_t* d, size_t n) {
+  if (n < 40) return "That file is too small to be firmware";
+  if (d[0] != 0xE9) return "That is not an ESP32 firmware file";
+  if (d[12] != 0x09 || d[13] != 0x00) return "That firmware is for a different chip (it must be for the ESP32-S3)";
+  uint32_t magic = d[32] | (d[33] << 8) | (d[34] << 16) | ((uint32_t)d[35] << 24);
+  if (magic != 0xABCD5432UL) {
+    return "That is not the app-only firmware file. Use the file named ...-app.bin (not the one named ...-full.bin)";
+  }
+  return nullptr;
+}
+
+static void updShowProgress(int pct, bool force = false) {
+  static int shown = -10;
+  if (!force && pct < shown + 2 && pct != 100) return;
+  shown = pct;
+  showBig("Update", "Installing firmware", String(pct) + "%", "Do not unplug", C_ORANGE, 120000);
+}
+
+// Downloads the firmware named by the last check from GitHub, writes it to the other app slot and restarts.
+static void updInstall() {
+  if (updLatest.length() == 0 || updFile.length() == 0) { updFail("Check for an update first"); return; }
+  if (WiFi.status() != WL_CONNECTED) { updFail("The stick is not on a Wi-Fi network with internet"); return; }
+  updRunning = true;
+  updState = UPD_DOWNLOADING;
+  updPct = 0;
+  updErr = "";
+  updShowProgress(0, true);
+
+  NetworkClientSecure tls;
+  HTTPClient http;
+  if (!updHttpBegin(http, tls, String(UPDATE_BASE_URL) + updFile)) { updFail("Could not start the download"); return; }
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    updFail(code < 0 ? String("Could not reach GitHub") : "GitHub answered " + String(code));
+    return;
+  }
+  int len = http.getSize();
+  if (len <= 0 || (uint32_t)len != updSize) { http.end(); updFail("The download is not the size latest.json promised"); return; }
+  if (!Update.begin(len, U_FLASH)) {
+    http.end();
+    updFail(String("Cannot start the update: ") + Update.errorString());
+    return;
+  }
+  Update.setMD5(updMd5.c_str());     // checked before the stick switches to the new firmware
+
+  NetworkClient* stream = http.getStreamPtr();
+  static uint8_t buf[1460];
+  int done = 0;
+  uint32_t lastData = millis();
+  while (done < len) {
+    int avail = stream->available();
+    if (avail > 0) {
+      int n = stream->readBytes(buf, avail > (int)sizeof(buf) ? (int)sizeof(buf) : avail);
+      if (n <= 0) continue;
+      if (done == 0) {
+        const char* bad = appImageProblem(buf, n);
+        if (bad) { Update.abort(); http.end(); updFail(bad); return; }
+      }
+      if (Update.write(buf, n) != (size_t)n) {
+        String e = Update.errorString();
+        Update.abort();
+        http.end();
+        updFail("Writing the firmware failed: " + e);
+        return;
+      }
+      done += n;
+      lastData = millis();
+      updPct = (int)((int64_t)done * 100 / len);
+      updShowProgress(updPct);
+    } else {
+      if (!http.connected() && stream->available() == 0) break;
+      if (millis() - lastData > 20000) break;
+      delay(2);
+    }
+    server.handleClient();           // keep the web page answering (progress, busy messages)
+  }
+  http.end();
+  if (done != len) { Update.abort(); updFail("The download stopped half-way. Nothing was changed; try again"); return; }
+  if (!Update.end(true)) {
+    String e = Update.errorString();
+    updFail("The firmware did not pass the check (" + e + "). Nothing was changed");
+    return;
+  }
+
+  updPct = 100;
+  updState = UPD_DONE;
+  updShowProgress(100, true);
+  uint32_t until = millis() + 2500;                    // let the web page see "done" before the restart
+  while ((int32_t)(millis() - until) < 0) { server.handleClient(); delay(5); }
+  restartRequested = true;                             // the main loop restarts the stick into the new firmware
+}
+
+// Runs from loop(): the periodic look for updates, and the work the web page asked for.
+void updTick() {
+  static bool scheduled = false;
+  static uint32_t nextCheck = 0;
+  if (WiFi.status() != WL_CONNECTED) { scheduled = false; return; }   // no internet link: nothing to do
+  if (!scheduled) { scheduled = true; nextCheck = millis() + 20000; }  // first look 20 s after joining
+  if (updInstallRequested) {
+    updInstallRequested = false;
+    updInstall();
+    return;
+  }
+  if (updCheckRequested || (int32_t)(millis() - nextCheck) >= 0) {
+    updCheckRequested = false;
+    bool ok = updCheck();
+    nextCheck = millis() + (ok ? UPDATE_CHECK_MS : UPDATE_RETRY_MS);
+  }
+}
+
+// ---- update web handlers ----
+void handleUpdateInfo() {
+  const char* st = updState == UPD_CHECKING ? "checking" : updState == UPD_DOWNLOADING ? "downloading"
+                 : updState == UPD_DONE ? "done" : updState == UPD_ERROR ? "error" : "idle";
+  String out = "{\"cur\":\"" FW_VERSION "\",\"latest\":\"" + jsonEscape(updLatest) + "\"";
+  out += ",\"avail\":" + String(updAvail ? 1 : 0);
+  out += ",\"net\":" + String(WiFi.status() == WL_CONNECTED ? 1 : 0);   // can the stick itself reach GitHub?
+  out += ",\"state\":\"" + String(st) + "\",\"pct\":" + String((int)updPct);
+  out += ",\"err\":\"" + jsonEscape(updErr) + "\"";
+  out += ",\"host\":\"" + hostName + "\",\"base\":\"" UPDATE_BASE_URL "\"}";
+  server.send(200, "application/json", out);
+}
+
+void handleUpdateCheck() {
+  if (updRunning) { server.send(409, "text/plain", "An update is being installed"); return; }
+  if (WiFi.status() != WL_CONNECTED) { server.send(409, "text/plain", "The stick is not on a Wi-Fi network with internet"); return; }
+  updCheckRequested = true;
+  server.send(200, "text/plain", "OK");
+}
+
+void handleUpdateInstall() {
+  if (updRunning) { server.send(409, "text/plain", "An update is already being installed"); return; }
+  if (WiFi.status() != WL_CONNECTED) { server.send(409, "text/plain", "The stick is not on a Wi-Fi network with internet"); return; }
+  if (!updAvail) { server.send(409, "text/plain", "No newer firmware is known. Check for updates first"); return; }
+  updInstallRequested = true;
+  updState = UPD_DOWNLOADING;       // so the page shows progress straight away
+  updPct = 0;
+  server.send(200, "text/plain", "OK");
+}
+
+// The web page (or you) sends the app image: POST /update/upload, multipart form with one file.
+static bool upBad = false, upBusy = false;
+static String upErr;
+static size_t upGot = 0;
+void handleUpdateUploadData() {
+  HTTPUpload& up = server.upload();
+  if (up.status == UPLOAD_FILE_START) {
+    upBad = false; upBusy = false; upErr = ""; upGot = 0;
+    if (updRunning) { upBad = true; upBusy = true; upErr = "An update is already being installed"; return; }
+    updRunning = true;
+    updState = UPD_DOWNLOADING;
+    updPct = 0;
+    showBig("Update", "Receiving firmware", "0%", "Do not unplug", C_ORANGE, 120000);
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) { upBad = true; upErr = String("Cannot start the update: ") + Update.errorString(); }
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (upBad) return;
+    if (upGot == 0) {
+      const char* bad = appImageProblem(up.buf, up.currentSize);
+      if (bad) { upBad = true; upErr = bad; Update.abort(); return; }
+    }
+    if (Update.write(up.buf, up.currentSize) != up.currentSize) {
+      upBad = true; upErr = "Writing the firmware failed: " + String(Update.errorString()); Update.abort(); return;
+    }
+    upGot += up.currentSize;
+    int total = server.clientContentLength();
+    if (total > 0) { updPct = (int)((int64_t)upGot * 100 / total); if (updPct > 99) updPct = 99; updShowProgress(updPct); }
+  } else if (up.status == UPLOAD_FILE_END) {
+    if (upBad) return;
+    if (upGot < APP_MIN_BYTES) { upBad = true; upErr = "That file is too small to be the firmware"; Update.abort(); return; }
+    if (!Update.end(true)) { upBad = true; upErr = "The firmware did not pass the check (" + String(Update.errorString()) + "). Nothing was changed"; }
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    if (!upBad) Update.abort();
+    upBad = true;
+    upErr = "The upload was interrupted. Nothing was changed";
+  }
+}
+
+void handleUpdateUploadDone() {
+  if (upBusy) { server.send(409, "text/plain", upErr); return; }     // another update is running: leave its state alone
+  if (upBad || upGot == 0) {
+    if (!upBad) upErr = "No file was received";
+    updFail(upErr);
+    lastScreenKey = "";            // redraw the normal screen
+    toastUntil = 0;
+    server.send(400, "text/plain", upErr);
+    return;
+  }
+  updPct = 100;
+  updState = UPD_DONE;
+  updShowProgress(100, true);
+  server.send(200, "text/plain", "OK");
+  restartRequested = true;         // the main loop restarts the stick into the new firmware
+}
+
 // ---------------- Settings from the web installer ----------------
 // The installer page writes a small text block into a dedicated flash partition
 // ("cfg", see partitions.csv) in the form:
@@ -2404,6 +2877,21 @@ void loadConfig() {
     i = j + 1;
   }
 }
+
+// ---------------- Network name ----------------
+// "TeslaWiFiUSBStick-D4F1A2": the fixed name plus the last 3 bytes of the Wi-Fi MAC address, so several sticks on
+// one network have different names. It is the DHCP host name (shown in your router's list of devices) and the
+// mDNS name, so http://TeslaWiFiUSBStick-D4F1A2.local opens the web page from your home network.
+void initHostName() {
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char suffix[8];
+  snprintf(suffix, sizeof(suffix), "-%02X%02X%02X", mac[3], mac[4], mac[5]);
+  hostName = String(HOST_PREFIX) + suffix;
+}
+
+// Stops web requests that change the card or Wi-Fi while a firmware update is being installed.
+#define BUSY_GUARD(fn) ([]() { if (updRunning) { server.send(503, "text/plain", "A firmware update is being installed"); return; } fn(); })
 
 // ---------------- Setup / loop ----------------
 void setup() {
@@ -2476,10 +2964,14 @@ void setup() {
 
   // Wi-Fi access point + web server
   WiFi.persistent(false);          // we store credentials ourselves
+  initHostName();
+  WiFi.setHostname(hostName.c_str());   // must be set before the interface starts
   WiFi.mode(WIFI_AP_STA);          // own access point + optional router link
   WiFi.setAutoReconnect(true);
   WiFi.softAP(cfgSsid.c_str(), cfgPass.c_str(), cfgChannel, cfgHidden);
+  WiFi.softAPsetHostname(hostName.c_str());
   loadWifiPrefs();
+  if (MDNS.begin(hostName.c_str())) MDNS.addService("http", "tcp", 80);   // http://<name>.local
 
   if (firstRun) {
     // Only the progress page: no file or mode requests until the card is set up.
@@ -2492,24 +2984,28 @@ void setup() {
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
-  server.on("/card/rebuild", HTTP_POST, handleCardRebuild);
+  server.on("/card/rebuild", HTTP_POST, BUSY_GUARD(handleCardRebuild));
   server.on("/api/list", HTTP_GET, handleList);
   server.on("/download", HTTP_GET, handleDownload);
-  server.on("/upload", HTTP_POST, handleUploadDone, handleUploadData);
-  server.on("/rename", HTTP_POST, handleRename);
-  server.on("/delete", HTTP_POST, handleDelete);
-  server.on("/mkdir", HTTP_POST, handleMkdir);
-  server.on("/lockchime", HTTP_POST, handleLockChime);
-  server.on("/mode", HTTP_POST, handleMode);
-  server.on("/store/take", HTTP_POST, handleStoreTake);
-  server.on("/wifi/scan", HTTP_POST, handleWifiScan);
+  server.on("/upload", HTTP_POST, BUSY_GUARD(handleUploadDone), handleUploadData);
+  server.on("/rename", HTTP_POST, BUSY_GUARD(handleRename));
+  server.on("/delete", HTTP_POST, BUSY_GUARD(handleDelete));
+  server.on("/mkdir", HTTP_POST, BUSY_GUARD(handleMkdir));
+  server.on("/lockchime", HTTP_POST, BUSY_GUARD(handleLockChime));
+  server.on("/mode", HTTP_POST, BUSY_GUARD(handleMode));
+  server.on("/store/take", HTTP_POST, BUSY_GUARD(handleStoreTake));
+  server.on("/wifi/scan", HTTP_POST, BUSY_GUARD(handleWifiScan));
   server.on("/api/wifi/networks", HTTP_GET, handleWifiNetworks);
   server.on("/api/wifi/status", HTTP_GET, handleWifiStatus);
-  server.on("/wifi/connect", HTTP_POST, handleWifiConnect);
+  server.on("/wifi/connect", HTTP_POST, BUSY_GUARD(handleWifiConnect));
   server.on("/api/wifi/saved", HTTP_GET, handleWifiSaved);
-  server.on("/wifi/delete", HTTP_POST, handleWifiDelete);
+  server.on("/wifi/delete", HTTP_POST, BUSY_GUARD(handleWifiDelete));
   server.on("/play", HTTP_GET, handlePlay);
   server.on("/api/wavinfo", HTTP_GET, handleWavInfo);
+  server.on("/api/update", HTTP_GET, handleUpdateInfo);
+  server.on("/update/check", HTTP_POST, handleUpdateCheck);
+  server.on("/update/install", HTTP_POST, handleUpdateInstall);
+  server.on("/update/upload", HTTP_POST, handleUpdateUploadDone, handleUpdateUploadData);
   server.begin();
 
   if (sectorCount > 0) setUsbMode(true);   // the car gets its drive straight away
@@ -2552,6 +3048,7 @@ void loop() {
     }
   }
   staAutoJoinTick();   // look for and join a remembered network
+  updTick();           // look for a newer firmware on GitHub now and then; install it when asked
 
   // BOOT button: short press = random lock chime (then the stick restarts),
   // held for more than 5 seconds = restart only. Both act when the button is let

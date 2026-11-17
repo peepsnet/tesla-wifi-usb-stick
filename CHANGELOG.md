@@ -3,6 +3,20 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.16 (2026-11-17)
+- **Sound categories.** New **Sounds** tab: your sounds grouped by category (Christmas Sounds, Halloween Sounds, ...),
+  with a built-in **UnCategorized**. A sound can be in several categories. Create, rename and delete categories; sounds are
+  never deleted with a category
+- **Name and file name:** every sound has a readable **Name** and a **File name**, both editable. File names are
+  restricted (letters, numbers, spaces and `_ - . ( ) & ' #`, up to 64 characters, ending in `.wav`); uploads get any other
+  character replaced with `_`
+- **Random categories:** tick **Random** on the categories the stick's button should pick from (theming for holidays).
+  Only those are used; if none is ticked the stick says so. Out of the box UnCategorized is ticked, so nothing changes for
+  existing sticks
+- The old folder view is now the **Library files** tab. Sounds copied in with a computer (PC Mode), uploaded, renamed or
+  deleted there are picked up automatically
+- Stored in one small hidden file (`.sounds.db`) on CHIME_STORE; firmware updates and the Boombox drive are not affected
+
 ## 0.15 (2026-11-17)
 - **Restart button** on the web page ("Restart stick", under the mode switch). It does the same clean restart as holding
   the stick's button for 5 seconds: the drive is released, the car sees the stick unplugged and plugged in again, and

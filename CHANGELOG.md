@@ -3,6 +3,10 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.17 (2026-11-17)
+- **Categories stand out** on the Sounds tab: each one is a card with a solid coloured header bar (blue, grey for
+  UnCategorized), a count badge and a fold arrow, and its sounds are indented on white underneath
+
 ## 0.16 (2026-11-17)
 - **Sound categories.** New **Sounds** tab: your sounds grouped by category (Christmas Sounds, Halloween Sounds, ...),
   with a built-in **UnCategorized**. A sound can be in several categories. Create, rename and delete categories; sounds are

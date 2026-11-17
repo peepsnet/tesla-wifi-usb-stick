@@ -74,7 +74,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.13"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.14"               // bump for every release (also listed in CHANGELOG.md)
 #define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
 // Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
 // fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.

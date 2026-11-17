@@ -74,7 +74,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.14"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.15"               // bump for every release (also listed in CHANGELOG.md)
 #define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
 // Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
 // fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.
@@ -1444,6 +1444,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
   display:inline-block;font-weight:400;line-height:1.5;text-align:center;vertical-align:middle;cursor:pointer;
   border:1px solid transparent;border-radius:.375rem;padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;
   transition:color .15s,background-color .15s,border-color .15s}
+ #reboot{display:inline-block;font-weight:400;line-height:1.5;text-align:center;vertical-align:middle;cursor:pointer;
+  border:1px solid #6c757d;border-radius:.375rem;padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;color:#6c757d;background:transparent}
+ #reboot:hover{color:#fff;background:#6c757d}
  #toggle,#wconn,#tabs button.on{color:#fff;background:#0d6efd;border-color:#0d6efd}
  #toggle:hover,#wconn:hover,#tabs button.on:hover{background:#0b5ed7;border-color:#0a58ca}
  #updgo,#updfilego{color:#fff;background:#198754;border-color:#198754}
@@ -1475,7 +1478,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <h2>Wi-Fi USB Stick <small id="ver" style="font-size:13px;font-weight:400;color:#888"></small>
  <a id="updi" href="#upd" hidden title="A firmware update is available" aria-label="A firmware update is available"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 5l5 5h-3.5v5h-3v-5H7z"/></svg></a></h2>
 <div id="host"></div>
-<div id="bar"><span id="mode"></span><br><button id="toggle"></button><div id="modehelp"></div></div>
+<div id="bar"><span id="mode"></span><br><button id="toggle"></button><button id="reboot" title="Restart the stick (it starts in Car Mode)">Restart stick</button><div id="modehelp"></div></div>
 <details id="wifi"><summary>Wi-Fi network (join your router)</summary>
  <div id="wst"></div>
  <div id="wsaved"></div>
@@ -1646,6 +1649,14 @@ function afterChime(n){
 }
 $('#tlib').onclick=()=>{vol='store';dir=dirs.store;load()};
 $('#tcar').onclick=()=>{vol='car';dir=dirs.car;load()};
+$('#reboot').onclick=async()=>{
+ if(!confirm('Restart the stick?\n\nThe car sees it unplugged and plugged in again, and the stick starts in Car Mode. This page comes back by itself.'))return;
+ try{await api('/reboot',{method:'POST'})}catch(e){msg(e.message);return}
+ const t='The stick is restarting. This page comes back by itself (rejoin the stick\'s Wi-Fi if your phone dropped it).';
+ $('#files').innerHTML='';$('#tools').style.display='none';msg(t);
+ const w=()=>fetch('/api/status',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;location.reload()}).catch(()=>{msg(t);setTimeout(w,2000)});
+ setTimeout(w,6000);
+};
 $('#toggle').onclick=async()=>{
  msg('Switching...');
  try{await api('/mode?usb='+(usb?0:1),{method:'POST'})}catch(e){msg(e.message)}
@@ -2504,6 +2515,13 @@ void handleStoreTake() {               // edit the library from the web page aga
   server.send(200, "text/plain", "OK");
 }
 
+// Restart button on the web page: the same clean restart as the BOOT button's long press (the drive is let go of
+// properly, the car sees the stick unplugged and plugged in again). It always comes back in Car Mode.
+void handleReboot() {
+  server.send(200, "text/plain", "OK");
+  restartRequested = true;             // the main loop does it after the answer has been sent
+}
+
 // ---------------- Random lock chime (BOOT button) ----------------
 String lastChime;   // the file picked last time, so a press tries to choose a different one
 
@@ -3043,6 +3061,7 @@ void setup() {
   server.on("/lockchime", HTTP_POST, BUSY_GUARD(handleLockChime));
   server.on("/mode", HTTP_POST, BUSY_GUARD(handleMode));
   server.on("/store/take", HTTP_POST, BUSY_GUARD(handleStoreTake));
+  server.on("/reboot", HTTP_POST, BUSY_GUARD(handleReboot));
   server.on("/wifi/scan", HTTP_POST, BUSY_GUARD(handleWifiScan));
   server.on("/api/wifi/networks", HTTP_GET, handleWifiNetworks);
   server.on("/api/wifi/status", HTTP_GET, handleWifiStatus);

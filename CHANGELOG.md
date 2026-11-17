@@ -3,6 +3,11 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.15 (2026-11-17)
+- **Restart button** on the web page ("Restart stick", under the mode switch). It does the same clean restart as holding
+  the stick's button for 5 seconds: the drive is released, the car sees the stick unplugged and plugged in again, and
+  the stick starts in Car Mode. The page comes back by itself
+
 ## 0.14 (2026-11-17)
 - **Mode names:** *Car Mode* (Boombox exposed to the car, CHIME_STORE hidden) and *PC Mode* (Boombox hidden,
   CHIME_STORE exposed to a computer). They replace "car mode" / "edit mode" on the web page, the screen and in the

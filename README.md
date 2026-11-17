@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.14.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.15.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -16,7 +16,7 @@ a general-purpose Wi-Fi USB drive for other devices.)
 - **Make Lock Chime** button on every `.wav`: copies it to `/LockChime.wav` (the original is kept) and
   warns you if the file doesn't look like something the car will play
 - Button on the stick: a short press picks a random lock chime from the library (16-bit PCM, under the size limit)
-  and restarts; holding it for more than 5 seconds only restarts the stick
+  and restarts; holding it for more than 5 seconds only restarts the stick (the web page has a **Restart stick** button for the same)
 - **Firmware updates over Wi-Fi from the web page** that keep your settings, saved networks and files, with an
   **update-available icon** on the screen and the page (see [Updating the firmware](#updating-the-firmware))
 - Calls itself `TeslaWiFiUSBStick-<last 3 bytes of the MAC>` (for example `TeslaWiFiUSBStick-D4F1A2`) on your

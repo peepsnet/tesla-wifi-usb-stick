@@ -76,7 +76,7 @@
 // ---------------- Config ----------------
 const char* AP_SSID = "Tesla-USB-Stick";
 const char* AP_PASS = "s3xyandiknowit";   // at least 8 characters
-#define FW_VERSION "0.19"               // bump for every release (also listed in CHANGELOG.md)
+#define FW_VERSION "0.20"               // bump for every release (also listed in CHANGELOG.md)
 #define HOST_PREFIX "TeslaWiFiUSBStick" // network name of the stick; the last 3 bytes of its MAC are added: TeslaWiFiUSBStick-D4F1A2
 // Where the stick looks for updates: the GitHub Pages site of this repository, which the build workflow
 // fills with latest.json and the firmware (see "Firmware updates" below). Must end with a slash.
@@ -1800,15 +1800,15 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
     Only the page's own buttons are styled; the small icon buttons in the file rows are left alone. */
  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:#212529;line-height:1.5}
  h2{font-weight:500;line-height:1.2}
- #toggle,#scan,#wconn,#updcheck,#updgo,#updfilego,#rebuild,#take,#tabs button,#tools button.ib{
+ #scan,#wconn,#updcheck,#updgo,#updfilego,#rebuild,#tabs button,#tools button.ib{
   display:inline-block;font-weight:400;line-height:1.5;text-align:center;vertical-align:middle;cursor:pointer;
   border:1px solid transparent;border-radius:.375rem;padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;
   transition:color .15s,background-color .15s,border-color .15s}
  #reboot{display:inline-block;font-weight:400;line-height:1.5;text-align:center;vertical-align:middle;cursor:pointer;
   border:1px solid #6c757d;border-radius:.375rem;padding:.375rem .75rem;margin:.15rem .25rem .15rem 0;font-size:1rem;color:#6c757d;background:transparent}
  #reboot:hover{color:#fff;background:#6c757d}
- #toggle,#wconn,#tabs button.on{color:#fff;background:#0d6efd;border-color:#0d6efd}
- #toggle:hover,#wconn:hover,#tabs button.on:hover{background:#0b5ed7;border-color:#0a58ca}
+ #wconn,#tabs button.on{color:#fff;background:#0d6efd;border-color:#0d6efd}
+ #wconn:hover,#tabs button.on:hover{background:#0b5ed7;border-color:#0a58ca}
  #updgo,#updfilego{color:#fff;background:#198754;border-color:#198754}
  #updgo:hover,#updfilego:hover{background:#157347;border-color:#146c43}
  #scan,#updcheck,#tabs button{color:#6c757d;background:transparent;border-color:#6c757d}
@@ -1816,11 +1816,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #tabs button.on{color:#fff;background:#0d6efd;border-color:#0d6efd}
  #rebuild{color:#fff;background:#dc3545;border-color:#dc3545}
  #rebuild:hover{background:#bb2d3b;border-color:#b02a37}
- #take{color:#000;background:#ffc107;border-color:#ffc107}
- #take:hover{background:#ffca2c;border-color:#ffc720}
  #tools button.ib{color:#0d6efd;background:transparent;border-color:#0d6efd;padding:.25rem .5rem}
  #tools button.ib:hover{color:#fff;background:#0d6efd}
- #toggle:disabled,#scan:disabled,#wconn:disabled,#updcheck:disabled,#updgo:disabled,#updfilego:disabled,#rebuild:disabled,#take:disabled{opacity:.65;cursor:default}
+ #scan:disabled,#wconn:disabled,#updcheck:disabled,#updgo:disabled,#updfilego:disabled,#rebuild:disabled{opacity:.65;cursor:default}
  #tabs{gap:0;margin:14px 0 0}
  #tabs button{flex:1;margin:0;border-radius:0;font-size:1.05rem}
  #tabs button:first-child{border-radius:.375rem 0 0 0}
@@ -1872,6 +1870,11 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  #cats td.nm .fn{font-size:.78rem;color:#6c757d;word-break:break-all}
  #cats .sum{font-size:.9rem;margin:.5rem 0}
  #cats .sum.bad{color:#b02a37}
+ dialog#swdlg{border:1px solid #dee2e6;border-radius:.5rem;padding:1rem;width:min(92vw,420px);box-sizing:border-box}
+ dialog#swdlg::backdrop{background:rgba(0,0,0,.45)}
+ #swdlg h3{margin:0 0 .5rem;font-weight:500}
+ #swdlg .sm{font-size:.95rem;color:#212529;margin:.4rem 0 .8rem}
+ #swdlg .sm p{margin:.4rem 0}
  dialog#edlg{border:1px solid #dee2e6;border-radius:.5rem;padding:1rem;width:min(92vw,420px);box-sizing:border-box}
  dialog#edlg::backdrop{background:rgba(0,0,0,.45)}
  #edlg h3{margin:0 0 .25rem;font-weight:500}
@@ -1934,12 +1937,11 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
  </ul>
  <p class="sm">Do not use this stick as the car's dashcam or Sentry drive: its USB is full speed only, and if the car offers to format the drive, say no (the stick's sound library would survive, but the car drive's contents would not). Software and models differ, and reports from owners don't always agree, so your owner's manual is the final word.</p>
 </details>
-<div id="bar"><span id="mode"></span><br><button id="toggle"></button><button id="reboot" title="Restart the stick (it starts in Car Mode)">Restart stick</button><div id="modehelp"></div></div>
-<div id="tabs"><button id="tcm">Car Mode</button><button id="tpm">PC Mode</button></div>
+<div id="bar"><span id="mode"></span><br><button id="reboot" title="Restart the stick (it starts in Car Mode)">Restart stick</button><div id="modehelp"></div></div>
+<div id="tabs"><button id="tbb">Boombox Drive</button><button id="tsd">Storage Drive</button></div>
 <div id="panel">
 <div id="subtabs"><button id="tlib">Sounds</button><button id="tfiles">Library files</button></div>
 <div id="volinfo"></div>
-<button id="take" style="display:none">Use the library here instead (eject it on the computer first)</button>
 <div id="tools">
  <input type="file" id="up" multiple>
  <button id="upb" class="ib"></button>
@@ -1949,6 +1951,10 @@ const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <div id="msg"></div>
 <div id="cats" style="display:none"></div>
 <table id="files"></table>
+<dialog id="swdlg"><h3 id="swtitle"></h3>
+ <div id="swbody" class="sm"></div>
+ <div><button type="button" class="bb bb-primary" id="swgo">Switch</button><button type="button" class="bb" id="swcancel">Cancel</button></div>
+</dialog>
 <dialog id="edlg"><h3>Edit sound</h3>
  <label for="edname">Name</label><input type="text" id="edname" maxlength="60" autocomplete="off">
  <label for="edfile">File name</label><input type="text" id="edfile" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -1989,34 +1995,28 @@ async function load(){
  msg();
  wstatus();
  const st=await (await fetch('/api/status')).json();
- const wasPc=pcLib;
  usb=!!st.usb;pcLib=!!st.pcLib;
- if(pcLib&&!wasPc&&vol==='store'){vol='car';dir=dirs.car}
- const hs=!!st.store||pcLib;
- if(hs!==hasStore){hasStore=hs;vol=hasStore&&usb?'store':'car';dir=dirs[vol]}
+ hasStore=!!st.store;
+ vol=usb?'store':'car';dir=dirs[vol];             // the tab always follows the mode: Storage Drive = Car Mode, Boombox Drive = PC Mode
  $('#bar').className=usb?'usb':'';
  $('#mode').textContent=st.problem?'Card problem: '+st.problem+'.':usb
-  ?'Car Mode: Boombox is exposed to the car, CHIME_STORE is hidden.'+(hasStore?' You can still edit CHIME_STORE here.':' Editing is disabled.')
-  :'PC Mode: Boombox is hidden, CHIME_STORE is exposed. '+(pcLib?'A computer on the USB port sees CHIME_STORE as a drive.':'Nothing is shown on the USB port right now (you took CHIME_STORE back to edit it here).');
+  ?'Storage Drive tab (Car Mode): the car has the Boombox drive. You edit your sounds here.'
+  :'Boombox Drive tab (PC Mode): the stick has the Boombox drive, so you can edit it here. '+(pcLib?'A computer on the USB port sees your sound library as a drive.':'');
  if(st.ver)$('#ver').textContent='v'+st.ver;
  if(st.host)$('#host').textContent='Name on your network: '+st.host+'  (http://'+st.host+'.local)';
  updLoad();
- $('#toggle').textContent=usb?'Switch to PC Mode':'Switch to Car Mode';
- $('#modehelp').textContent=usb?'PC Mode hides Boombox and shows CHIME_STORE to a computer on the USB port. You can then edit Boombox here.':'Car Mode gives Boombox back to the car and hides CHIME_STORE. The stick always starts in Car Mode.';
- $('#tabs').style.display=hasStore?'':'none';
+ $('#modehelp').textContent='Tap the other tab to switch modes. The stick always starts in Storage Drive (Car Mode).';
  const catsView=vol==='store'&&lview==='cats';
- $('#tcm').className=vol==='store'?'on':'';
- $('#tpm').className=vol==='car'?'on':'';
+ $('#tsd').className=vol==='store'?'on':'';
+ $('#tbb').className=vol==='car'?'on':'';
  $('#subtabs').style.display=vol==='store'&&hasStore?'':'none';
  $('#tlib').className=catsView?'on':'';
  $('#tfiles').className=vol==='store'&&!catsView?'on':'';
  $('#card').style.display=vol==='car'?'':'none';       // re-creating the Boombox drive belongs to the PC Mode tab
- const editable=vol==='store'?!pcLib:!usb;
- $('#take').style.display=vol==='store'&&pcLib?'':'none';
- $('#volinfo').textContent=!hasStore?'':vol==='store'
-  ?(pcLib?'The computer on the USB port is using the sound library as a drive, so it can\'t be edited here at the same time.'
-   :'Your sounds, on the stick\'s own storage. The car never sees these files.'+(st.stTotal?' '+fmt(st.stFree*1024)+' free of '+fmt(st.stTotal*1024)+'.':''))
-  :(usb?'The car is using this drive. Switch to PC Mode to see or edit it.':'What the car sees. Make Lock Chime writes LockChime.wav here.'+(st.total?' '+fmt(st.used)+' used of '+fmt(st.total)+'.':''));
+ const editable=vol==='store'?hasStore:true;
+ $('#volinfo').textContent=vol==='store'
+  ?(hasStore?'Your sounds, on the stick\'s own storage. The car never sees these files.'+(st.stTotal?' '+fmt(st.stFree*1024)+' free of '+fmt(st.stTotal*1024)+'.':''):'The storage drive is not available, so it can\'t be edited.')
+  :'What the car sees when the stick is in Storage Drive mode. Make Lock Chime writes LockChime.wav here.'+(st.total?' '+fmt(st.used)+' used of '+fmt(st.total)+'.':'');
  $('#tools').style.display=editable?'':'none';
  $('#mk').style.display=catsView?'none':'';
  $('#path').textContent=editable&&!catsView?(hasStore?(vol==='store'?'Library':'Car drive')+': ':'')+dir:'';
@@ -2194,8 +2194,23 @@ function afterChime(n){
 }
 $('#tlib').onclick=()=>{vol='store';lview='cats';load()};
 $('#tfiles').onclick=()=>{vol='store';lview='files';dir=dirs.store;load()};
-$('#tcm').onclick=()=>{vol='store';load()};
-$('#tpm').onclick=()=>{vol='car';dir=dirs.car;load()};
+function askSwitch(toPc){
+ if(toPc===!usb)return;                    // already in that mode
+ $('#swtitle').textContent=toPc?'Switch to Boombox Drive?':'Switch to Storage Drive?';
+ $('#swbody').innerHTML=toPc
+  ?'<p>This switches the stick to <b>PC Mode</b>.</p><p>The <b>car loses the Boombox drive</b>: it sees the drive eject, and the stick takes it so you can add, rename or delete its files here.</p><p>A computer on the USB port is shown your sound library instead. Your files are safe, but Tesla will not play a lock chime until you switch back.</p>'
+  :'<p>This switches the stick to <b>Car Mode</b>.</p><p>The <b>car gets the Boombox drive back</b> (it sees a drive being plugged in) and your sound library is hidden from any computer.</p><p>You will edit your sounds on the Storage Drive tab. Do not switch while the car is writing to the drive.</p>';
+ $('#swgo').onclick=async()=>{
+  $('#swdlg').close();
+  msg('Switching...');
+  try{await api('/mode?usb='+(toPc?0:1),{method:'POST'})}catch(e){msg(e.message)}
+  load();
+ };
+ $('#swdlg').showModal();
+}
+$('#swcancel').onclick=()=>$('#swdlg').close();
+$('#tbb').onclick=()=>askSwitch(true);
+$('#tsd').onclick=()=>askSwitch(false);
 $('#reboot').onclick=async()=>{
  if(!confirm('Restart the stick?\n\nThe car sees it unplugged and plugged in again, and the stick starts in Car Mode. This page comes back by itself.'))return;
  try{await api('/reboot',{method:'POST'})}catch(e){msg(e.message);return}
@@ -2203,17 +2218,6 @@ $('#reboot').onclick=async()=>{
  $('#files').innerHTML='';$('#tools').style.display='none';msg(t);
  const w=()=>fetch('/api/status',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;location.reload()}).catch(()=>{msg(t);setTimeout(w,2000)});
  setTimeout(w,6000);
-};
-$('#toggle').onclick=async()=>{
- msg('Switching...');
- const toPc=usb;
- try{await api('/mode?usb='+(usb?0:1),{method:'POST'});vol=toPc||!hasStore?'car':'store';dir=dirs[vol]}catch(e){msg(e.message)}   // show the tab of the mode we just entered
- load();
-};
-$('#take').onclick=async()=>{
- msg('Taking the library back...');
- try{await api('/store/take',{method:'POST'})}catch(e){msg(e.message)}
- load();
 };
 setIcon($('#upb'),'upload','Upload files');
 setIcon($('#mk'),'folder','New folder');

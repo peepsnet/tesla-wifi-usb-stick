@@ -3,6 +3,13 @@
 The firmware version is `FW_VERSION` near the top of `src/main.cpp`. It is shown on the stick's screen at
 start-up, at the top of the stick's web page, and on the installer page.
 
+## 0.20 (2026-11-18)
+- **Two tabs named after the drives:** **Boombox Drive** (first) and **Storage Drive** (second). The tab you are on is
+  the mode the stick is in: Boombox Drive = PC Mode, Storage Drive = Car Mode
+- **Tapping the other tab switches modes** and first shows a pop-up that explains what the switch does. The separate
+  Switch button is gone; **Restart stick** stays
+- The "Use the library here instead" button is gone from the page
+
 ## 0.19 (2026-11-17)
 - **Mode section moved below the Tesla lock chime guide** and turned into two tabs. The **Switch to PC Mode / Car Mode**
   and **Restart stick** buttons sit above them

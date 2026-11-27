@@ -7,7 +7,7 @@ Leave the stick in the car's USB port. Join its Wi-Fi, listen to your `.wav` fil
 **Make Lock Chime**, and the file is copied to `LockChime.wav` ready for the car. (It also works as
 a general-purpose Wi-Fi USB drive for other devices.)
 
-**Current version: 0.19.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+**Current version: 0.20.** See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Features
 - Looks like a normal USB drive (backed by the microSD card) to a car, PC, printer, etc.
@@ -120,18 +120,16 @@ so `CHIME_STORE` and its files survive. Put the card in a PC card reader and you
 | **PC Mode** | the sound library (`CHIME_STORE`), as a drive for a computer. `Boombox` is hidden | the `Boombox` drive |
 
 Each part of the card is only ever used by one side at a time; that is what keeps the files safe. In PC Mode,
-plug the stick into a computer to copy sounds straight onto the library. To edit the library from the web page
-while in PC Mode, eject the drive on the computer and press **Use the library here instead**. Ejecting a drive
-on the computer always makes the stick take that drive back.
+plug the stick into a computer to copy sounds straight onto the library. Ejecting a drive on the computer makes the
+stick take that drive back.
 
-Below the Tesla guide, the stick's web page has a mode section: the **Switch to PC Mode / Car Mode** and **Restart
-stick** buttons, and two tabs, one for each mode. The page opens on the tab of the mode the stick is in, and the switch
-button takes you to the tab of the mode you switch to.
-- **Car Mode** tab (`CHIME_STORE`, the storage partition): everything for your sounds. **Sounds** (categories) and
-  **Library files** sub-tabs: upload, play, rename, delete and organise them at any time, even while the car is using
-  its drive.
-- **PC Mode** tab (`Boombox`, the car's partition): the files on the car's drive, and **Car drive tools** (erase and
-  re-create the Boombox drive). The files are only editable in PC Mode, when the stick (not the car) owns the drive.
+Below the Tesla guide, the stick's web page has two tabs, one for each mode, and a **Restart stick** button. The tab you
+are on is the mode the stick is in, and the page opens on it. Tapping the other tab switches modes, after a pop-up that
+explains what the switch does and asks you to confirm.
+- **Boombox Drive** tab (PC Mode): the files on the car's drive (`Boombox`), and **Car drive tools** (erase and
+  re-create the Boombox drive). The files are only editable here, when the stick (not the car) owns the drive.
+- **Storage Drive** tab (Car Mode, how the stick always starts; `CHIME_STORE`): everything for your sounds. **Sounds**
+  (categories) and **Library files** sub-tabs: upload, play, rename, delete and organise them while the car uses its drive.
 
 **Make Lock Chime** on a library sound copies it to `LockChime.wav` on the car drive. If the car is using the drive,
 the stick takes it away, copies the file and restarts.
